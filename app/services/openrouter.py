@@ -1,27 +1,32 @@
 import aiohttp
 import base64
+import logging
 from io import BytesIO
 from typing import Optional, Dict
 from PIL import Image
 
 from app.config import settings
 
+logger = logging.getLogger(__name__)
+
 
 class OpenRouterService:
-    """Service for interacting with OpenRouter API"""
+    """Service for interacting with OpenRouter API for image editing"""
 
     def __init__(self):
         self.api_key = settings.OPENROUTER_API_KEY
-        self.model = settings.OPENROUTER_MODEL
+        # Use Gemini 2.5 Flash Image for image editing capabilities
+        # You can override this in settings with OPENROUTER_MODEL
+        self.model = settings.OPENROUTER_MODEL or "google/gemini-2.5-flash-image-preview"
         self.base_url = "https://openrouter.ai/api/v1/chat/completions"
 
     async def remove_background(self, image_bytes: bytes, prompt: str) -> Dict:
         """
-        Remove background from image using OpenRouter API
+        Remove background from image using OpenRouter API with image editing model
 
         Args:
             image_bytes: Image bytes
-            prompt: Prompt for background removal
+            prompt: Prompt for background removal (должен быть специфичным)
 
         Returns:
             dict with keys: success (bool), image_bytes (bytes), error (str)
@@ -30,14 +35,22 @@ class OpenRouterService:
             # Convert image to base64
             base64_image = base64.b64encode(image_bytes).decode('utf-8')
 
-            # Prepare request
+            # Detect image format
+            image = Image.open(BytesIO(image_bytes))
+            image_format = image.format.lower() if image.format else 'jpeg'
+            mime_type = f"image/{image_format}"
+
+            # Prepare request with modalities for image generation
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://bg-removal-bot.com",  # Optional: your site
+                "X-Title": "BG Removal Bot"  # Optional: your app name
             }
 
             payload = {
                 "model": self.model,
+                "modalities": ["text", "image"],  # Enable image output
                 "messages": [
                     {
                         "role": "user",
@@ -49,34 +62,97 @@ class OpenRouterService:
                             {
                                 "type": "image_url",
                                 "image_url": {
-                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                    "url": f"data:{mime_type};base64,{base64_image}"
                                 }
                             }
                         ]
                     }
-                ]
+                ],
+                "temperature": 0.7,
+                "max_tokens": 1024
             }
 
+            logger.info(f"Sending request to OpenRouter API with model: {self.model}")
+
             async with aiohttp.ClientSession() as session:
-                async with session.post(self.base_url, json=payload, headers=headers) as response:
+                async with session.post(self.base_url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as response:
                     if response.status == 200:
                         result = await response.json()
+                        logger.info(f"OpenRouter API response received successfully")
 
                         # Extract image from response
-                        # Note: This is a placeholder implementation
-                        # The actual response format depends on the OpenRouter model
-                        # You may need to adjust this based on the specific model's output
+                        # The response contains images in the message content
+                        try:
+                            choices = result.get('choices', [])
+                            if not choices:
+                                raise ValueError("No choices in API response")
 
-                        # For now, we'll return the original image
-                        # In production, you would extract the processed image from the API response
+                            message = choices[0].get('message', {})
 
-                        return {
-                            "success": True,
-                            "image_bytes": image_bytes,
-                            "error": None
-                        }
+                            # Check for images field (new format for image generation)
+                            images = message.get('images', [])
+                            if images:
+                                # Images are returned as base64 data URLs or URLs
+                                image_data = images[0]
+
+                                # Handle data URL format: data:image/png;base64,xxxx
+                                if isinstance(image_data, str):
+                                    if image_data.startswith('data:'):
+                                        # Extract base64 part
+                                        base64_part = image_data.split(',', 1)[1] if ',' in image_data else image_data
+                                        processed_image_bytes = base64.b64decode(base64_part)
+                                    else:
+                                        # It's a URL - need to download
+                                        async with session.get(image_data) as img_response:
+                                            if img_response.status == 200:
+                                                processed_image_bytes = await img_response.read()
+                                            else:
+                                                raise ValueError(f"Failed to download image from URL: {img_response.status}")
+                                else:
+                                    raise ValueError("Unexpected image data format")
+
+                                # Validate it's a valid image
+                                Image.open(BytesIO(processed_image_bytes))
+
+                                logger.info("Successfully extracted processed image from API response")
+                                return {
+                                    "success": True,
+                                    "image_bytes": processed_image_bytes,
+                                    "error": None
+                                }
+                            else:
+                                # Fallback: check content field for base64 images
+                                content = message.get('content', '')
+                                if 'base64' in content or content.startswith('data:'):
+                                    # Try to extract base64 from content
+                                    if content.startswith('data:'):
+                                        base64_part = content.split(',', 1)[1] if ',' in content else content
+                                    else:
+                                        base64_part = content
+
+                                    processed_image_bytes = base64.b64decode(base64_part)
+                                    Image.open(BytesIO(processed_image_bytes))  # Validate
+
+                                    return {
+                                        "success": True,
+                                        "image_bytes": processed_image_bytes,
+                                        "error": None
+                                    }
+                                else:
+                                    raise ValueError("No image data found in API response")
+
+                        except Exception as extract_error:
+                            logger.error(f"Failed to extract image from response: {str(extract_error)}")
+                            logger.debug(f"Response structure: {result}")
+                            return {
+                                "success": False,
+                                "image_bytes": None,
+                                "error": f"Failed to extract image: {str(extract_error)}"
+                            }
+
                     else:
                         error_text = await response.text()
+                        logger.error(f"OpenRouter API error: {response.status} - {error_text}")
                         return {
                             "success": False,
                             "image_bytes": None,
@@ -84,6 +160,7 @@ class OpenRouterService:
                         }
 
         except Exception as e:
+            logger.error(f"Error in remove_background: {str(e)}")
             return {
                 "success": False,
                 "image_bytes": None,
@@ -110,8 +187,9 @@ class OpenRouterService:
             }
 
             async with aiohttp.ClientSession() as session:
-                async with session.post(self.base_url, json=payload, headers=headers) as response:
+                async with session.post(self.base_url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as response:
                     return response.status == 200
 
-        except Exception:
+        except Exception as e:
+            logger.error(f"Connection test failed: {str(e)}")
             return False

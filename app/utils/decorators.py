@@ -4,11 +4,13 @@ from aiogram import types
 
 from app.database import get_db
 from app.database.crud import is_admin
+from app.config import settings
 
 
 def admin_only(func: Callable) -> Callable:
     """
     Decorator to restrict access to admin-only functions
+    Checks both ADMIN_IDS from config and admins table in database
 
     Usage:
         @router.message(Command("admin"))
@@ -26,14 +28,19 @@ def admin_only(func: Callable) -> Callable:
             telegram_id = message_or_callback.from_user.id
             send_method = message_or_callback.message.answer
 
-        # Check if user is admin
+        # Check if user is admin (check both config and database)
+        is_admin_in_config = telegram_id in settings.admin_ids_list
+
+        is_admin_in_db = False
         db = get_db()
         async with db.get_session() as session:
-            if await is_admin(session, telegram_id):
-                return await func(message_or_callback, *args, **kwargs)
-            else:
-                await send_method("❌ У вас нет доступа к этой функции.")
-                return None
+            is_admin_in_db = await is_admin(session, telegram_id)
+
+        if is_admin_in_config or is_admin_in_db:
+            return await func(message_or_callback, *args, **kwargs)
+        else:
+            await send_method("❌ У вас нет доступа к этой функции.")
+            return None
 
     return wrapper
 

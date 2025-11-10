@@ -127,7 +127,59 @@ async def check_payment_handler(message: Message, state: FSMContext):
             )
 
 
-async def process_payment_webhook(invoice_id: str, out_sum: float, signature: str) -> bool:
+async def notify_payment_success(bot, order_id: int):
+    """
+    Send notifications after successful payment
+
+    Args:
+        bot: Bot instance
+        order_id: Order ID
+    """
+    from app.database.models import Order, User, Package
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    from app.services.notification_service import NotificationService
+    from app.database.crud import get_user_balance
+
+    db = get_db()
+    async with db.get_session() as session:
+        # Get order with related data
+        result = await session.execute(
+            select(Order)
+            .where(Order.id == order_id)
+            .options(selectinload(Order.user), selectinload(Order.package))
+        )
+        order = result.scalar_one_or_none()
+
+        if not order:
+            return
+
+        # Get user's new balance
+        new_balance = await get_user_balance(session, order.user.telegram_id)
+
+        # Notify user
+        await NotificationService.notify_user_payment_success(
+            bot=bot,
+            telegram_id=order.user.telegram_id,
+            package_name=order.package.name,
+            images_count=order.package.images_count,
+            amount=float(order.amount),
+            new_balance=new_balance
+        )
+
+        # Notify admins
+        await NotificationService.notify_admins_new_payment(
+            bot=bot,
+            user_telegram_id=order.user.telegram_id,
+            username=order.user.username,
+            package_name=order.package.name,
+            images_count=order.package.images_count,
+            amount=float(order.amount),
+            order_id=order.id
+        )
+
+
+async def process_payment_webhook(invoice_id: str, out_sum: float, signature: str, bot=None) -> bool:
     """
     Process payment webhook from Robokassa
 
@@ -135,14 +187,18 @@ async def process_payment_webhook(invoice_id: str, out_sum: float, signature: st
         invoice_id: Invoice ID
         out_sum: Payment amount
         signature: Payment signature
+        bot: Optional bot instance for sending notifications
 
     Returns:
         True if payment was processed successfully
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     # Verify signature
     robokassa = RobokassaService()
     if not robokassa.verify_payment_signature(out_sum, int(invoice_id), signature):
-        print(f"Invalid signature for invoice {invoice_id}")
+        logger.error(f"Invalid signature for invoice {invoice_id}")
         return False
 
     # Mark order as paid
@@ -151,9 +207,17 @@ async def process_payment_webhook(invoice_id: str, out_sum: float, signature: st
         order = await mark_order_paid(session, invoice_id)
 
         if not order:
-            print(f"Order not found for invoice {invoice_id}")
+            logger.error(f"Order not found for invoice {invoice_id}")
             return False
 
         # Payment successful
-        print(f"Payment successful for order {order.id}")
+        logger.info(f"Payment successful for order {order.id}")
+
+        # Send notifications if bot instance is provided
+        if bot:
+            try:
+                await notify_payment_success(bot, order.id)
+            except Exception as e:
+                logger.error(f"Failed to send notifications for order {order.id}: {str(e)}")
+
         return True

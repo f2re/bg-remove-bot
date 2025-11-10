@@ -16,7 +16,9 @@ class Settings(BaseSettings):
 
     # OpenRouter
     OPENROUTER_API_KEY: str
-    OPENROUTER_MODEL: str = "nano-banana-ai/model-name"
+    # Use Gemini 2.5 Flash Image for image editing/generation
+    # This model supports both image input and image output with modalities
+    OPENROUTER_MODEL: str = "google/gemini-2.5-flash-image-preview"
 
     # Robokassa
     ROBOKASSA_LOGIN: str
