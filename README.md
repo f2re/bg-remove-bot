@@ -92,7 +92,10 @@ cp .env.example .env
 Обязательные параметры:
 - `BOT_TOKEN` - токен вашего бота от @BotFather
 - `ADMIN_IDS` - ID администраторов через запятую
-- `DB_PASSWORD` - пароль для PostgreSQL
+- `DATABASE_URL` - полный URL подключения к PostgreSQL (рекомендуется для локальной разработки)
+  - Формат: `postgresql+asyncpg://USER:PASSWORD@HOST:PORT/DATABASE`
+  - Пример: `postgresql+asyncpg://postgres:postgres@localhost:5432/raffle_bot`
+  - Альтернатива: можно использовать отдельные переменные `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`
 - `OPENROUTER_API_KEY` - API ключ OpenRouter
 - `ROBOKASSA_LOGIN` - логин в Robokassa
 - `ROBOKASSA_PASSWORD1` - пароль 1 Robokassa
@@ -111,25 +114,82 @@ docker-compose up -d
 
 ### 4. Запуск локально (без Docker)
 
-```bash
-# Установка зависимостей
-pip install -r requirements.txt
+#### Предварительные требования:
+- Python 3.11+
+- PostgreSQL 15+ (установленный локально или в Docker)
 
-# Запуск PostgreSQL (если еще не запущен)
-# Например, через Docker:
+#### Шаг 1: Установка зависимостей
+
+```bash
+pip install -r requirements.txt
+```
+
+#### Шаг 2: Настройка PostgreSQL
+
+**Вариант A: Локальный PostgreSQL**
+
+Если у вас установлен PostgreSQL локально, создайте базу данных:
+
+```bash
+# Войдите в psql
+psql -U postgres
+
+# Создайте базу данных
+CREATE DATABASE raffle_bot;
+
+# Выйдите из psql
+\q
+```
+
+**Вариант B: PostgreSQL через Docker**
+
+```bash
 docker run -d \
   --name postgres \
-  -e POSTGRES_DB=bg_removal_bot \
+  -e POSTGRES_DB=raffle_bot \
   -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD=your_password \
+  -e POSTGRES_PASSWORD=postgres \
   -p 5432:5432 \
   postgres:15
+```
 
-# Запуск миграций
+#### Шаг 3: Настройка переменных окружения
+
+В вашем `.env` файле используйте DATABASE_URL:
+
+```env
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/raffle_bot
+```
+
+Или используйте отдельные переменные:
+
+```env
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=raffle_bot
+DB_USER=postgres
+DB_PASSWORD=postgres
+```
+
+#### Шаг 4: Запуск миграций
+
+```bash
 alembic upgrade head
+```
 
-# Запуск бота
+#### Шаг 5: Запуск бота
+
+Вы можете запустить бота любым из следующих способов:
+
+```bash
+# Способ 1: Запуск как модуль
 python -m app.bot
+
+# Способ 2: Запуск через корневой скрипт
+python bot.py
+
+# Способ 3: С использованием python3
+python3 bot.py
 ```
 
 ## База данных
@@ -207,12 +267,15 @@ alembic downgrade -1
 BOT_TOKEN=your_bot_token
 ADMIN_IDS=123456789,987654321
 
-# Database
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=bg_removal_bot
-DB_USER=postgres
-DB_PASSWORD=your_password
+# Database - Вариант 1: Единая строка подключения (рекомендуется)
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/raffle_bot
+
+# Database - Вариант 2: Отдельные параметры (игнорируются если задан DATABASE_URL)
+# DB_HOST=localhost
+# DB_PORT=5432
+# DB_NAME=raffle_bot
+# DB_USER=postgres
+# DB_PASSWORD=your_password
 
 # OpenRouter
 OPENROUTER_API_KEY=your_api_key
