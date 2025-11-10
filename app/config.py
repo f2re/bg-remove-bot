@@ -1,0 +1,52 @@
+from pydantic_settings import BaseSettings
+from typing import List
+
+
+class Settings(BaseSettings):
+    # Telegram
+    BOT_TOKEN: str
+    ADMIN_IDS: str
+
+    # Database
+    DB_HOST: str = "localhost"
+    DB_PORT: int = 5432
+    DB_NAME: str = "bg_removal_bot"
+    DB_USER: str = "postgres"
+    DB_PASSWORD: str
+
+    # OpenRouter
+    OPENROUTER_API_KEY: str
+    OPENROUTER_MODEL: str = "nano-banana-ai/model-name"
+
+    # Robokassa
+    ROBOKASSA_LOGIN: str
+    ROBOKASSA_PASSWORD1: str
+    ROBOKASSA_PASSWORD2: str
+    ROBOKASSA_TEST_MODE: bool = False
+
+    # Pricing (in kopecks)
+    PACKAGE_1_PRICE: int = 5000
+    PACKAGE_5_PRICE: int = 20000
+    PACKAGE_10_PRICE: int = 35000
+    PACKAGE_50_PRICE: int = 150000
+
+    # Free images for new users
+    FREE_IMAGES_COUNT: int = 3
+
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+
+    @property
+    def database_url(self) -> str:
+        """Get async database URL for PostgreSQL"""
+        return f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+
+    @property
+    def admin_ids_list(self) -> List[int]:
+        """Get list of admin telegram IDs"""
+        return [int(id.strip()) for id in self.ADMIN_IDS.split(",") if id.strip()]
+
+
+# Global settings instance
+settings = Settings()
