@@ -7,6 +7,7 @@ from app.database import get_db
 from app.database.crud import create_support_ticket
 from app.keyboards.user_kb import get_support_menu, get_cancel_keyboard, get_back_keyboard
 from app.config import settings
+from app.services.notification_service import NotificationService
 
 router = Router()
 
@@ -101,27 +102,14 @@ async def process_support_message(message: Message, state: FSMContext):
             message=message.text
         )
 
-        # Notify admins
-        type_emoji = {
-            "general": "❓",
-            "bug": "🐛",
-            "payment": "💸",
-            "refund": "📦"
-        }
-
-        admin_text = (
-            f"{type_emoji.get(support_type, '💬')} <b>Новое обращение #{ticket.id}</b>\n\n"
-            f"👤 От: @{message.from_user.username or 'Unknown'} ({message.from_user.id})\n"
-            f"📝 Сообщение:\n{message.text}\n\n"
-            f"Используйте /admin для ответа"
+        # Notify admins using NotificationService
+        await NotificationService.notify_admins_new_support_request(
+            bot=message.bot,
+            ticket_id=ticket.id,
+            user_telegram_id=message.from_user.id,
+            username=message.from_user.username,
+            message=message.text
         )
-
-        # Send to all admins
-        for admin_id in settings.admin_ids_list:
-            try:
-                await message.bot.send_message(admin_id, admin_text, parse_mode="HTML")
-            except Exception as e:
-                print(f"Failed to notify admin {admin_id}: {str(e)}")
 
     await state.clear()
 

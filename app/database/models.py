@@ -96,15 +96,34 @@ class SupportTicket(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="open")  # open, in_progress, resolved
     admin_response: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    admin_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)  # Telegram ID of admin handling the ticket
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="support_tickets")
     order: Mapped[Optional["Order"]] = relationship("Order", back_populates="support_tickets")
+    messages: Mapped[List["SupportMessage"]] = relationship("SupportMessage", back_populates="ticket", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<SupportTicket(id={self.id}, user_id={self.user_id}, status={self.status})>"
+
+
+class SupportMessage(Base):
+    __tablename__ = "support_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticket_id: Mapped[int] = mapped_column(Integer, ForeignKey("support_tickets.id"))
+    sender_telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    ticket: Mapped["SupportTicket"] = relationship("SupportTicket", back_populates="messages")
+
+    def __repr__(self):
+        return f"<SupportMessage(id={self.id}, ticket_id={self.ticket_id}, is_admin={self.is_admin})>"
 
 
 class Admin(Base):

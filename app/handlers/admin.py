@@ -7,8 +7,10 @@ from aiogram.fsm.state import State, StatesGroup
 from app.database import get_db
 from app.database.crud import (
     get_statistics, get_open_tickets, resolve_ticket,
-    get_or_create_user, get_user_balance
+    get_or_create_user, get_user_balance, get_ticket_by_id,
+    add_support_message
 )
+from app.services.notification_service import NotificationService
 from app.keyboards.admin_kb import (
     get_admin_menu, get_ticket_actions, get_admin_back, get_admin_cancel
 )
@@ -36,7 +38,9 @@ async def admin_panel(message: Message):
         "📊 <b>Статистика бота:</b>\n\n"
         f"👥 Всего пользователей: {stats['total_users']}\n"
         f"📸 Обработано изображений: {stats['total_processed']}\n"
-        f"💰 Выручка: {stats['revenue']:.2f}₽\n"
+        f"   🎁 Бесплатных: {stats['free_images_processed']}\n"
+        f"   💎 Платных: {stats['paid_images_processed']}\n"
+        f"💰 Выручка: {stats['revenue']:.2f}₽ ({stats['paid_orders']} заказов)\n"
         f"📦 Активных заказов: {stats['active_orders']}\n"
         f"💬 Открытых обращений: {stats['open_tickets']}"
     )
@@ -57,7 +61,9 @@ async def admin_refresh(callback: CallbackQuery):
         "📊 <b>Статистика бота:</b>\n\n"
         f"👥 Всего пользователей: {stats['total_users']}\n"
         f"📸 Обработано изображений: {stats['total_processed']}\n"
-        f"💰 Выручка: {stats['revenue']:.2f}₽\n"
+        f"   🎁 Бесплатных: {stats['free_images_processed']}\n"
+        f"   💎 Платных: {stats['paid_images_processed']}\n"
+        f"💰 Выручка: {stats['revenue']:.2f}₽ ({stats['paid_orders']} заказов)\n"
         f"📦 Активных заказов: {stats['active_orders']}\n"
         f"💬 Открытых обращений: {stats['open_tickets']}"
     )
@@ -76,10 +82,13 @@ async def admin_stats(callback: CallbackQuery):
 
     text = (
         "📊 <b>Детальная статистика</b>\n\n"
-        f"👥 Всего пользователей: {stats['total_users']}\n"
+        f"👥 Всего пользователей: {stats['total_users']}\n\n"
         f"📸 Обработано изображений: {stats['total_processed']}\n"
+        f"   🎁 Бесплатных: {stats['free_images_processed']}\n"
+        f"   💎 Платных: {stats['paid_images_processed']}\n\n"
         f"💰 Выручка: {stats['revenue']:.2f}₽\n"
-        f"📦 Активных заказов: {stats['active_orders']}\n"
+        f"   📦 Оплаченных заказов: {stats['paid_orders']}\n"
+        f"   ⏳ Активных заказов: {stats['active_orders']}\n\n"
         f"💬 Открытых обращений: {stats['open_tickets']}\n\n"
         "Используйте другие команды для более детального просмотра."
     )
@@ -189,38 +198,101 @@ async def process_ticket_reply(message: Message, state: FSMContext):
 
     db = get_db()
     async with db.get_session() as session:
-        from app.database.models import SupportTicket
-        from sqlalchemy import select
-        from sqlalchemy.orm import selectinload
-
-        result = await session.execute(
-            select(SupportTicket)
-            .where(SupportTicket.id == ticket_id)
-            .options(selectinload(SupportTicket.user))
-        )
-        ticket = result.scalar_one_or_none()
+        ticket = await get_ticket_by_id(session, ticket_id)
 
         if not ticket:
             await message.answer("❌ Обращение не найдено")
             return
 
-        # Save response
-        await resolve_ticket(session, ticket_id, message.text)
-
-        # Send response to user
-        user_text = (
-            f"✅ <b>Ответ на ваше обращение #{ticket_id}</b>\n\n"
-            f"💬 {message.text}\n\n"
-            "Если у вас остались вопросы, создайте новое обращение."
+        # Add message to conversation
+        await add_support_message(
+            session,
+            ticket_id=ticket_id,
+            sender_telegram_id=message.from_user.id,
+            message=message.text,
+            is_admin=True
         )
 
-        try:
-            await message.bot.send_message(ticket.user.telegram_id, user_text, parse_mode="HTML")
-            await message.answer(f"✅ Ответ отправлен пользователю (ID: {ticket.user.telegram_id})")
-        except Exception as e:
-            await message.answer(f"❌ Не удалось отправить ответ: {str(e)}")
+        # Also update the admin_response field and resolve
+        await resolve_ticket(session, ticket_id, message.from_user.id, message.text)
+
+        # Send notification to user using NotificationService
+        await NotificationService.notify_user_support_reply(
+            bot=message.bot,
+            telegram_id=ticket.user.telegram_id,
+            ticket_id=ticket_id,
+            admin_username=message.from_user.username,
+            message=message.text
+        )
+
+        await message.answer(f"✅ Ответ отправлен пользователю (ID: {ticket.user.telegram_id})")
 
     await state.clear()
+
+
+@router.message(Command("support_reply"))
+@admin_only
+async def support_reply_command(message: Message):
+    """Reply to support ticket using command: /support_reply <ticket_id> <message>"""
+    try:
+        parts = message.text.split(maxsplit=2)
+        if len(parts) < 3:
+            await message.answer(
+                "❌ <b>Использование:</b>\n"
+                "/support_reply <ticket_id> <message>\n\n"
+                "<b>Пример:</b>\n"
+                "/support_reply 123 Ваш вопрос принят, мы работаем над решением",
+                parse_mode="HTML"
+            )
+            return
+
+        ticket_id = int(parts[1])
+        reply_message = parts[2]
+
+    except (IndexError, ValueError):
+        await message.answer(
+            "❌ <b>Ошибка формата</b>\n\n"
+            "Используйте: /support_reply <ticket_id> <message>",
+            parse_mode="HTML"
+        )
+        return
+
+    db = get_db()
+    async with db.get_session() as session:
+        ticket = await get_ticket_by_id(session, ticket_id)
+
+        if not ticket:
+            await message.answer(f"❌ Обращение #{ticket_id} не найдено")
+            return
+
+        # Add message to conversation
+        await add_support_message(
+            session,
+            ticket_id=ticket_id,
+            sender_telegram_id=message.from_user.id,
+            message=reply_message,
+            is_admin=True
+        )
+
+        # Also update the admin_response field
+        await resolve_ticket(session, ticket_id, message.from_user.id, reply_message)
+
+        # Send notification to user
+        await NotificationService.notify_user_support_reply(
+            bot=message.bot,
+            telegram_id=ticket.user.telegram_id,
+            ticket_id=ticket_id,
+            admin_username=message.from_user.username,
+            message=reply_message
+        )
+
+        await message.answer(
+            f"✅ Ответ отправлен!\n\n"
+            f"📝 Тикет: #{ticket_id}\n"
+            f"👤 Пользователь: {ticket.user.telegram_id}\n"
+            f"💬 Ваш ответ: {reply_message[:100]}{'...' if len(reply_message) > 100 else ''}",
+            parse_mode="HTML"
+        )
 
 
 @router.callback_query(F.data.startswith("admin_close_ticket:"))
@@ -231,7 +303,7 @@ async def admin_close_ticket(callback: CallbackQuery):
 
     db = get_db()
     async with db.get_session() as session:
-        await resolve_ticket(session, ticket_id, "Закрыто администратором")
+        await resolve_ticket(session, ticket_id, callback.from_user.id, "Закрыто администратором")
 
     await callback.message.edit_text(
         f"✅ Обращение #{ticket_id} закрыто",
@@ -362,7 +434,9 @@ async def admin_menu_callback(callback: CallbackQuery):
         "📊 <b>Статистика бота:</b>\n\n"
         f"👥 Всего пользователей: {stats['total_users']}\n"
         f"📸 Обработано изображений: {stats['total_processed']}\n"
-        f"💰 Выручка: {stats['revenue']:.2f}₽\n"
+        f"   🎁 Бесплатных: {stats['free_images_processed']}\n"
+        f"   💎 Платных: {stats['paid_images_processed']}\n"
+        f"💰 Выручка: {stats['revenue']:.2f}₽ ({stats['paid_orders']} заказов)\n"
         f"📦 Активных заказов: {stats['active_orders']}\n"
         f"💬 Открытых обращений: {stats['open_tickets']}"
     )
