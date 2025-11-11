@@ -4,7 +4,7 @@ from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from .models import User, Package, Order, ProcessedImage, SupportTicket, Admin
+from .models import User, Package, Order, ProcessedImage, SupportTicket, SupportMessage, Admin
 
 
 # ==================== USER OPERATIONS ====================
@@ -254,7 +254,42 @@ async def get_open_tickets(session: AsyncSession) -> List[SupportTicket]:
     return result.scalars().all()
 
 
-async def resolve_ticket(session: AsyncSession, ticket_id: int, admin_response: str):
+async def get_ticket_by_id(session: AsyncSession, ticket_id: int) -> Optional[SupportTicket]:
+    """Get support ticket by ID"""
+    result = await session.execute(
+        select(SupportTicket)
+        .where(SupportTicket.id == ticket_id)
+        .options(selectinload(SupportTicket.user), selectinload(SupportTicket.messages))
+    )
+    return result.scalar_one_or_none()
+
+
+async def add_support_message(session: AsyncSession, ticket_id: int, sender_telegram_id: int,
+                              message: str, is_admin: bool = False) -> SupportMessage:
+    """Add message to support ticket"""
+    support_message = SupportMessage(
+        ticket_id=ticket_id,
+        sender_telegram_id=sender_telegram_id,
+        is_admin=is_admin,
+        message=message
+    )
+    session.add(support_message)
+
+    # Update ticket status if admin is responding
+    if is_admin:
+        result = await session.execute(
+            select(SupportTicket).where(SupportTicket.id == ticket_id)
+        )
+        ticket = result.scalar_one_or_none()
+        if ticket and ticket.status == "open":
+            ticket.status = "in_progress"
+
+    await session.commit()
+    await session.refresh(support_message)
+    return support_message
+
+
+async def resolve_ticket(session: AsyncSession, ticket_id: int, admin_telegram_id: int, admin_response: str):
     """Resolve support ticket"""
     result = await session.execute(
         select(SupportTicket).where(SupportTicket.id == ticket_id)
@@ -264,8 +299,31 @@ async def resolve_ticket(session: AsyncSession, ticket_id: int, admin_response: 
     if ticket:
         ticket.status = "resolved"
         ticket.admin_response = admin_response
+        ticket.admin_id = admin_telegram_id
         ticket.resolved_at = datetime.utcnow()
         await session.commit()
+        await session.refresh(ticket)
+
+    return ticket
+
+
+async def get_user_tickets(session: AsyncSession, telegram_id: int) -> List[SupportTicket]:
+    """Get all tickets for a user"""
+    result = await session.execute(
+        select(User).where(User.telegram_id == telegram_id)
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        return []
+
+    result = await session.execute(
+        select(SupportTicket)
+        .where(SupportTicket.user_id == user.id)
+        .order_by(SupportTicket.created_at.desc())
+        .options(selectinload(SupportTicket.messages))
+    )
+    return result.scalars().all()
 
 
 # ==================== ADMIN OPERATIONS ====================
@@ -309,10 +367,34 @@ async def get_statistics(session: AsyncSession) -> dict:
     )
     open_tickets = open_tickets_result.scalar() or 0
 
+    # Total paid orders
+    paid_orders_result = await session.execute(
+        select(func.count(Order.id))
+        .where(Order.status == "paid")
+    )
+    paid_orders = paid_orders_result.scalar() or 0
+
+    # Free images processed
+    free_images_result = await session.execute(
+        select(func.count(ProcessedImage.id))
+        .where(ProcessedImage.is_free == True)
+    )
+    free_images = free_images_result.scalar() or 0
+
+    # Paid images processed
+    paid_images_result = await session.execute(
+        select(func.count(ProcessedImage.id))
+        .where(ProcessedImage.is_free == False)
+    )
+    paid_images = paid_images_result.scalar() or 0
+
     return {
         "total_users": total_users,
         "total_processed": total_processed,
+        "free_images_processed": free_images,
+        "paid_images_processed": paid_images,
         "revenue": float(revenue),
         "active_orders": active_orders,
+        "paid_orders": paid_orders,
         "open_tickets": open_tickets
     }

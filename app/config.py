@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # Free images for new users
     FREE_IMAGES_COUNT: int = 3
 
+    # Logging
+    LOG_LEVEL: str = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -164,3 +164,78 @@ class NotificationService:
 
         except Exception as e:
             logger.error(f"Failed to send refund notification to user {telegram_id}: {str(e)}")
+
+    @staticmethod
+    async def notify_admins_new_support_request(
+        bot: Bot,
+        ticket_id: int,
+        user_telegram_id: int,
+        username: Optional[str],
+        message: str
+    ):
+        """
+        Notify admins about new support request
+
+        Args:
+            bot: Bot instance
+            ticket_id: Support ticket ID
+            user_telegram_id: User telegram ID
+            username: User username
+            message: Support message
+        """
+        try:
+            # Truncate message if too long
+            display_message = message[:200] + "..." if len(message) > 200 else message
+
+            text = (
+                "💬 <b>Новое обращение в поддержку!</b>\n\n"
+                f"🆔 Тикет: #{ticket_id}\n"
+                f"👤 Пользователь: @{username or 'Unknown'} (ID: {user_telegram_id})\n\n"
+                f"📝 Сообщение:\n{display_message}\n\n"
+                f"Используйте /support_reply {ticket_id} для ответа"
+            )
+
+            # Send to all admins
+            for admin_id in settings.admin_ids_list:
+                try:
+                    await bot.send_message(admin_id, text, parse_mode="HTML")
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin_id}: {str(e)}")
+
+            logger.info(f"Support request notification sent to admins for ticket {ticket_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to send support notification to admins: {str(e)}")
+
+    @staticmethod
+    async def notify_user_support_reply(
+        bot: Bot,
+        telegram_id: int,
+        ticket_id: int,
+        admin_username: Optional[str],
+        message: str
+    ):
+        """
+        Notify user about admin reply to their support request
+
+        Args:
+            bot: Bot instance
+            telegram_id: User telegram ID
+            ticket_id: Support ticket ID
+            admin_username: Admin username
+            message: Admin's reply message
+        """
+        try:
+            text = (
+                "💬 <b>Ответ от поддержки</b>\n\n"
+                f"🆔 Тикет: #{ticket_id}\n"
+                f"👨‍💼 Администратор: @{admin_username or 'Support'}\n\n"
+                f"📝 Ответ:\n{message}\n\n"
+                "Если у вас остались вопросы, отправьте новое сообщение через меню поддержки."
+            )
+
+            await bot.send_message(telegram_id, text, parse_mode="HTML")
+            logger.info(f"Support reply notification sent to user {telegram_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to send support reply notification to user {telegram_id}: {str(e)}")

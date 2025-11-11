@@ -79,21 +79,37 @@ class OpenRouterService:
                     if response.status == 200:
                         result = await response.json()
                         logger.info(f"OpenRouter API response received successfully")
+                        logger.debug(f"Full API response: {result}")
 
                         # Extract image from response
                         # The response contains images in the message content
                         try:
                             choices = result.get('choices', [])
                             if not choices:
+                                logger.error("No choices in API response")
+                                logger.debug(f"Response keys: {result.keys()}")
                                 raise ValueError("No choices in API response")
 
                             message = choices[0].get('message', {})
+                            logger.debug(f"Message content: {message}")
 
                             # Check for images field (new format for image generation)
                             images = message.get('images', [])
+                            logger.debug(f"Images field: {images}, type: {type(images)}")
+
                             if images:
                                 # Images are returned as base64 data URLs or URLs
                                 image_data = images[0]
+                                logger.debug(f"Image data type: {type(image_data)}, first 100 chars: {str(image_data)[:100]}")
+
+                                # Handle dict format (some APIs return {url: "...", type: "..."})
+                                if isinstance(image_data, dict):
+                                    image_url = image_data.get('url') or image_data.get('data')
+                                    if image_url:
+                                        image_data = image_url
+                                    else:
+                                        logger.error(f"Dict format image data without url/data field: {image_data.keys()}")
+                                        raise ValueError(f"Unexpected dict format: {image_data.keys()}")
 
                                 # Handle data URL format: data:image/png;base64,xxxx
                                 if isinstance(image_data, str):
@@ -101,15 +117,24 @@ class OpenRouterService:
                                         # Extract base64 part
                                         base64_part = image_data.split(',', 1)[1] if ',' in image_data else image_data
                                         processed_image_bytes = base64.b64decode(base64_part)
-                                    else:
+                                        logger.debug(f"Decoded base64 image, size: {len(processed_image_bytes)} bytes")
+                                    elif image_data.startswith('http'):
                                         # It's a URL - need to download
+                                        logger.debug(f"Downloading image from URL: {image_data}")
                                         async with session.get(image_data) as img_response:
                                             if img_response.status == 200:
                                                 processed_image_bytes = await img_response.read()
+                                                logger.debug(f"Downloaded image, size: {len(processed_image_bytes)} bytes")
                                             else:
                                                 raise ValueError(f"Failed to download image from URL: {img_response.status}")
+                                    else:
+                                        # Assume it's raw base64 without prefix
+                                        logger.debug("Attempting to decode as raw base64")
+                                        processed_image_bytes = base64.b64decode(image_data)
+                                        logger.debug(f"Decoded raw base64, size: {len(processed_image_bytes)} bytes")
                                 else:
-                                    raise ValueError("Unexpected image data format")
+                                    logger.error(f"Unexpected image data type: {type(image_data)}, value: {image_data}")
+                                    raise ValueError(f"Unexpected image data type: {type(image_data)}")
 
                                 # Validate it's a valid image
                                 Image.open(BytesIO(processed_image_bytes))
@@ -142,8 +167,19 @@ class OpenRouterService:
                                     raise ValueError("No image data found in API response")
 
                         except Exception as extract_error:
-                            logger.error(f"Failed to extract image from response: {str(extract_error)}")
-                            logger.debug(f"Response structure: {result}")
+                            logger.error(f"Failed to extract image from response: {str(extract_error)}", exc_info=True)
+                            logger.debug(f"Full response structure: {result}")
+
+                            # Try to extract any useful info from the response for debugging
+                            if 'choices' in result and result['choices']:
+                                msg = result['choices'][0].get('message', {})
+                                logger.debug(f"Message keys: {msg.keys()}")
+                                logger.debug(f"Content type: {type(msg.get('content'))}")
+                                if 'images' in msg:
+                                    logger.debug(f"Images structure: {type(msg['images'])}, length: {len(msg['images']) if isinstance(msg['images'], (list, tuple)) else 'N/A'}")
+                                    if msg['images']:
+                                        logger.debug(f"First image type: {type(msg['images'][0])}")
+
                             return {
                                 "success": False,
                                 "image_bytes": None,
