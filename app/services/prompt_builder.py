@@ -18,31 +18,31 @@ class PromptBuilder:
         # Base instruction for background removal with green screen (chroma key approach)
         # Green screen is better supported by Gemini and will be post-processed to transparency
         base_prompt = (
-            "Edit this image: Remove the entire background completely and replace it with a solid bright green background (RGB: 0, 255, 0). "
+            "Edit this image: Remove the entire background completely and replace it with a solid bright white background (RGB: 255, 255, 255). "
             "Keep ONLY the main subject in the foreground. "
-            "Ensure clean, sharp edges around the subject with no green spill or halos. "
+            "Ensure clean, sharp edges around the subject with no white spill or halos. "
         )
 
         # Handle complex edges (hair, fur)
         if image_analysis.get('has_hair', False):
             base_prompt += (
                 "The subject has complex edges like hair or fur - preserve every fine detail, "
-                "maintain soft natural edges around hair strands with pixel-perfect separation from the green background. "
-                "Avoid any green color bleeding into the hair strands. "
+                "maintain soft natural edges around hair strands with pixel-perfect separation from the white background. "
+                "Avoid any white color bleeding into the hair strands. "
             )
 
         # Handle transparent objects (glass, reflections)
         if image_analysis.get('has_transparent_objects', False):
             base_prompt += (
                 "Preserve any glass, transparent materials, or reflective surfaces on the subject. "
-                "Keep their natural transparency and reflections intact, but ensure the background behind them is solid green. "
+                "Keep their natural transparency and reflections intact, but ensure the background behind them is solid white. "
             )
 
         # Handle motion blur
         if image_analysis.get('has_motion_blur', False):
             base_prompt += (
                 "The image has motion blur - preserve the natural blur effect on the subject's edges "
-                "while maintaining clean separation from the green background. "
+                "while maintaining clean separation from the white background. "
             )
 
         # Handle brightness and contrast
@@ -50,23 +50,23 @@ class PromptBuilder:
         if brightness < 100:
             base_prompt += (
                 "The image is dark - carefully separate the subject from the background, "
-                "enhance edge detection in low light, ensure the green background is uniformly bright (RGB: 0, 255, 0). "
+                "enhance edge detection in low light, ensure the white background is uniformly bright (RGB: 255, 255, 255). "
             )
         elif brightness > 200:
             base_prompt += (
                 "The image is bright - preserve bright highlights on the subject, "
-                "maintain consistent green background color throughout (RGB: 0, 255, 0). "
+                "maintain consistent white background color throughout (RGB: 255, 255, 255). "
             )
 
-        # Add critical requirements for green screen output
+        # Add critical requirements for white screen output
         base_prompt += (
             "Requirements: "
-            "1) Background must be solid bright green (RGB: 0, 255, 0) with no gradients or variations. "
-            "2) Subject edges must be pixel-perfect with clean separation and no green color cast. "
-            "3) Preserve all fine details like hair strands with no green bleeding. "
-            "4) Maintain the subject's original colors without any green tint or reflection. "
+            "1) Background must be solid bright white (RGB: 255, 255, 255) with no gradients or variations. "
+            "2) Subject edges must be pixel-perfect with clean separation and no white color cast. "
+            "3) Preserve all fine details like hair strands with no white bleeding. "
+            "4) Maintain the subject's original colors without any white tint or reflection. "
             "5) Output as PNG format. "
-            "6) The green background should be uniform across the entire background area."
+            "6) The white background should be uniform across the entire background area."
         )
 
         return base_prompt
@@ -75,9 +75,9 @@ class PromptBuilder:
     def build_simple_prompt() -> str:
         """Build simple default prompt for background removal"""
         return (
-            "Edit this image: Remove the entire background and replace it with a solid bright green background (RGB: 0, 255, 0). "
-            "Keep only the main subject. The green background must be uniform with no gradients. "
-            "Preserve clean edges with no green spill, natural colors, and all details of the subject. "
+            "Edit this image: Remove the entire background and replace it with a solid bright white background (RGB: 255, 255, 255). "
+            "Keep only the main subject. The white background must be uniform with no gradients. "
+            "Preserve clean edges with no white spill, natural colors, and all details of the subject. "
             "Output as PNG format."
         )
 
