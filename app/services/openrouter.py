@@ -104,13 +104,24 @@ class OpenRouterService:
                                 image_data = images[0]
                                 logger.debug(f"Image data type: {type(image_data)}, first 100 chars: {str(image_data)[:100]}")
 
-                                # Handle dict format (some APIs return {url: "...", type: "..."})
+                                # Handle dict format (some APIs return {url: "...", type: "...", image_url: {...}})
                                 if isinstance(image_data, dict):
-                                    image_url = image_data.get('url') or image_data.get('data')
+                                    # Try different possible keys for the image URL
+                                    image_url = (image_data.get('url') or
+                                                image_data.get('data') or
+                                                image_data.get('image_url'))
+
+                                    # If image_url is also a dict, extract the url from it
+                                    if isinstance(image_url, dict):
+                                        logger.debug(f"image_url is dict: {image_url.keys()}")
+                                        image_url = image_url.get('url') or image_url.get('data')
+
                                     if image_url:
                                         image_data = image_url
+                                        logger.debug(f"Extracted URL from dict: {str(image_url)[:100]}")
                                     else:
-                                        logger.error(f"Dict format image data without url/data field: {image_data.keys()}")
+                                        logger.error(f"Dict format image data without url/data/image_url field: {image_data.keys()}")
+                                        logger.error(f"Full dict content: {image_data}")
                                         raise ValueError(f"Unexpected dict format: {image_data.keys()}")
 
                                 # Handle data URL format: data:image/png;base64,xxxx
