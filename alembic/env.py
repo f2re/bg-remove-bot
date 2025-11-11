@@ -1,4 +1,5 @@
 import asyncio
+import os
 from logging.config import fileConfig
 
 from sqlalchemy import pool
@@ -9,7 +10,6 @@ from alembic import context
 
 # Import your models here
 from app.database.models import Base
-from app.config import settings
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -24,8 +24,23 @@ if config.config_file_name is not None:
 # for 'autogenerate' support
 target_metadata = Base.metadata
 
-# Set database URL from settings
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# Set database URL from settings or environment
+# Try to import settings, but fall back to environment variables if it fails
+try:
+    from app.config import settings
+    database_url = settings.database_url
+except Exception:
+    # Fallback: construct database URL from environment variables
+    database_url = os.getenv('DATABASE_URL')
+    if not database_url:
+        db_host = os.getenv('DB_HOST', 'localhost')
+        db_port = os.getenv('DB_PORT', '5432')
+        db_name = os.getenv('DB_NAME', 'bg_removal_bot')
+        db_user = os.getenv('DB_USER', 'postgres')
+        db_password = os.getenv('DB_PASSWORD', 'postgres')
+        database_url = f"postgresql+asyncpg://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+
+config.set_main_option("sqlalchemy.url", database_url)
 
 
 def run_migrations_offline() -> None:
