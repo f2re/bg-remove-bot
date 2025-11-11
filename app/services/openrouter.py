@@ -51,6 +51,7 @@ class OpenRouterService:
             payload = {
                 "model": self.model,
                 "modalities": ["text", "image"],  # Enable image output
+                "stream": False,  # Explicitly disable streaming for image responses
                 "messages": [
                     {
                         "role": "user",
@@ -69,7 +70,7 @@ class OpenRouterService:
                     }
                 ],
                 "temperature": 0.7,
-                "max_tokens": 1024
+                "max_tokens": 4096  # Increased for image generation (1290 image tokens needed)
             }
 
             logger.info(f"Sending request to OpenRouter API with model: {self.model}")
@@ -79,7 +80,8 @@ class OpenRouterService:
                     if response.status == 200:
                         result = await response.json()
                         logger.info(f"OpenRouter API response received successfully")
-                        logger.debug(f"Full API response: {result}")
+                        logger.info(f"Response keys: {result.keys()}")
+                        logger.info(f"Full API response: {result}")
 
                         # Extract image from response
                         # The response contains images in the message content
