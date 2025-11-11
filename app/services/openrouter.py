@@ -51,6 +51,7 @@ class OpenRouterService:
             payload = {
                 "model": self.model,
                 "modalities": ["text", "image"],  # Enable image output
+                "stream": False,  # Explicitly disable streaming for image responses
                 "messages": [
                     {
                         "role": "user",
@@ -69,7 +70,7 @@ class OpenRouterService:
                     }
                 ],
                 "temperature": 0.7,
-                "max_tokens": 1024
+                "max_tokens": 4096  # Increased for image generation (1290 image tokens needed)
             }
 
             logger.info(f"Sending request to OpenRouter API with model: {self.model}")
@@ -79,7 +80,8 @@ class OpenRouterService:
                     if response.status == 200:
                         result = await response.json()
                         logger.info(f"OpenRouter API response received successfully")
-                        logger.debug(f"Full API response: {result}")
+                        logger.info(f"Response keys: {result.keys()}")
+                        logger.info(f"Full API response: {result}")
 
                         # Extract image from response
                         # The response contains images in the message content
@@ -102,13 +104,24 @@ class OpenRouterService:
                                 image_data = images[0]
                                 logger.debug(f"Image data type: {type(image_data)}, first 100 chars: {str(image_data)[:100]}")
 
-                                # Handle dict format (some APIs return {url: "...", type: "..."})
+                                # Handle dict format (some APIs return {url: "...", type: "...", image_url: {...}})
                                 if isinstance(image_data, dict):
-                                    image_url = image_data.get('url') or image_data.get('data')
+                                    # Try different possible keys for the image URL
+                                    image_url = (image_data.get('url') or
+                                                image_data.get('data') or
+                                                image_data.get('image_url'))
+
+                                    # If image_url is also a dict, extract the url from it
+                                    if isinstance(image_url, dict):
+                                        logger.debug(f"image_url is dict: {image_url.keys()}")
+                                        image_url = image_url.get('url') or image_url.get('data')
+
                                     if image_url:
                                         image_data = image_url
+                                        logger.debug(f"Extracted URL from dict: {str(image_url)[:100]}")
                                     else:
-                                        logger.error(f"Dict format image data without url/data field: {image_data.keys()}")
+                                        logger.error(f"Dict format image data without url/data/image_url field: {image_data.keys()}")
+                                        logger.error(f"Full dict content: {image_data}")
                                         raise ValueError(f"Unexpected dict format: {image_data.keys()}")
 
                                 # Handle data URL format: data:image/png;base64,xxxx
