@@ -9,7 +9,8 @@ from app.database.crud import (
     update_user_stats, save_processed_image, get_all_packages
 )
 from app.keyboards.user_kb import (
-    get_main_menu, get_packages_keyboard, get_info_menu, get_back_keyboard
+    get_main_menu, get_packages_keyboard, get_info_menu, get_back_keyboard,
+    get_support_contact_keyboard, get_buy_package_keyboard, get_low_balance_keyboard
 )
 from app.services.image_processor import ImageProcessor
 from app.services.prompt_builder import PromptBuilder
@@ -35,12 +36,23 @@ async def start_handler(message: Message):
 
     welcome_text = (
         f"👋 Привет, {message.from_user.first_name}!\n\n"
-        "Я помогу удалить фон с изображений.\n\n"
-        f"🎁 Вам доступно {settings.FREE_IMAGES_COUNT} бесплатные обработки!\n\n"
-        "Просто отправьте мне фото, и я уберу фон за несколько секунд."
+        "Я — AI-бот для удаления фона с изображений. "
+        "Превращаю любое фото в изображение с прозрачным фоном!\n\n"
+        f"🎁 У вас {settings.FREE_IMAGES_COUNT} бесплатные обработки!\n\n"
+        "📸 <b>Как начать?</b>\n"
+        "1. Отправьте мне фото\n"
+        "2. Получите результат за несколько секунд\n"
+        "3. Наслаждайтесь чистым изображением!\n\n"
+        "💡 <b>Используйте меню ниже:</b>\n"
+        "• 📸 Обработать изображение — начать работу\n"
+        "• 📊 Мой баланс — проверить доступные обработки\n"
+        "• 💎 Купить пакет — пополнить баланс\n"
+        "• ℹ️ Информация — узнать детали\n"
+        "• 💬 Поддержка — связаться с нами\n\n"
+        "✨ Готов к работе! Отправляйте фото!"
     )
 
-    await message.answer(welcome_text, reply_markup=get_main_menu())
+    await message.answer(welcome_text, parse_mode="HTML", reply_markup=get_main_menu())
 
 
 @router.message(F.text == "📊 Мой баланс")
@@ -58,10 +70,16 @@ async def balance_handler(message: Message):
         f"📸 Всего доступно: {balance['total']}"
     )
 
+    # Add contextual messages and keyboards based on balance
     if balance['total'] == 0:
         text += "\n\n💰 У вас закончились изображения. Купите пакет для продолжения работы!"
-
-    await message.answer(text, parse_mode="HTML")
+        await message.answer(text, parse_mode="HTML", reply_markup=get_buy_package_keyboard())
+    elif balance['total'] <= 3:
+        text += "\n\n💡 Рекомендуем пополнить баланс заранее!"
+        await message.answer(text, parse_mode="HTML", reply_markup=get_low_balance_keyboard())
+    else:
+        text += "\n\n✅ У вас достаточно изображений для работы!"
+        await message.answer(text, parse_mode="HTML")
 
 
 @router.message(F.text == "💎 Купить пакет")
@@ -123,10 +141,176 @@ async def info_how_it_works_handler(callback: CallbackQuery):
     await callback.answer()
 
 
+@router.callback_query(F.data == "info_offer")
+async def info_offer_handler(callback: CallbackQuery):
+    """Handle offer/agreement info request"""
+    text = (
+        "📄 <b>Публичная оферта</b>\n\n"
+        "Используя данного бота, вы соглашаетесь со следующими условиями:\n\n"
+        "1. <b>Услуга</b>\n"
+        "Бот предоставляет услугу удаления фона с изображений с использованием AI технологий.\n\n"
+        "2. <b>Стоимость</b>\n"
+        "• Первые 3 обработки - бесплатно\n"
+        "• Далее - согласно выбранному пакету\n\n"
+        "3. <b>Оплата</b>\n"
+        "Оплата производится через платежную систему Robokassa.\n\n"
+        "4. <b>Качество</b>\n"
+        "Результат зависит от качества исходного изображения. "
+        "Мы не гарантируем идеальный результат для всех изображений.\n\n"
+        "5. <b>Использование изображений</b>\n"
+        "Ваши изображения обрабатываются через OpenRouter API и не сохраняются на наших серверах после обработки.\n\n"
+        "📧 По вопросам: обратитесь в поддержку через бот"
+    )
+
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_back_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "info_refund")
+async def info_refund_handler(callback: CallbackQuery):
+    """Handle refund policy info request"""
+    text = (
+        "💸 <b>Условия возврата</b>\n\n"
+        "1. <b>Возврат средств</b>\n"
+        "Возврат средств возможен в течение 14 дней с момента покупки, "
+        "если услуга не была использована (изображения не были обработаны).\n\n"
+        "2. <b>Частичный возврат</b>\n"
+        "Если вы использовали часть купленного пакета, возврат производится "
+        "за неиспользованные обработки по пропорциональной стоимости.\n\n"
+        "3. <b>Процедура возврата</b>\n"
+        "Для оформления возврата:\n"
+        "• Обратитесь в поддержку через бот\n"
+        "• Укажите номер заказа и причину возврата\n"
+        "• Средства будут возвращены в течение 5-7 рабочих дней\n\n"
+        "4. <b>Отказ в возврате</b>\n"
+        "Возврат невозможен, если:\n"
+        "• Прошло более 14 дней с покупки\n"
+        "• Все изображения из пакета были использованы\n"
+        "• Обнаружены признаки злоупотребления услугой\n\n"
+        "💬 Для оформления возврата обратитесь в поддержку"
+    )
+
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_back_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "info_privacy")
+async def info_privacy_handler(callback: CallbackQuery):
+    """Handle privacy policy info request"""
+    text = (
+        "🔒 <b>Политика конфиденциальности</b>\n\n"
+        "1. <b>Сбор данных</b>\n"
+        "Мы собираем:\n"
+        "• Telegram ID и username\n"
+        "• Историю транзакций\n"
+        "• Статистику использования\n\n"
+        "2. <b>Обработка изображений</b>\n"
+        "• Изображения отправляются в OpenRouter API для обработки\n"
+        "• Мы сохраняем только Telegram file_id для истории\n"
+        "• Сами изображения не хранятся на наших серверах\n"
+        "• OpenRouter не сохраняет ваши изображения после обработки\n\n"
+        "3. <b>Использование данных</b>\n"
+        "Ваши данные используются исключительно для:\n"
+        "• Предоставления услуги\n"
+        "• Обработки платежей\n"
+        "• Связи с вами по вопросам поддержки\n\n"
+        "4. <b>Защита данных</b>\n"
+        "• Все данные хранятся в защищенной базе данных\n"
+        "• Используется шифрование соединения\n"
+        "• Доступ имеют только авторизованные администраторы\n\n"
+        "5. <b>Удаление данных</b>\n"
+        "Для удаления ваших данных обратитесь в поддержку.\n\n"
+        "📧 Вопросы: обратитесь в поддержку через бот"
+    )
+
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_back_keyboard())
+    await callback.answer()
+
+
 @router.callback_query(F.data == "back_to_menu")
 async def back_to_menu_handler(callback: CallbackQuery):
     """Handle back to menu"""
     await callback.message.delete()
+    await callback.answer()
+
+
+@router.callback_query(F.data == "contact_support")
+async def contact_support_handler(callback: CallbackQuery):
+    """Handle contact support button from error messages"""
+    text = (
+        "💬 <b>Обратная связь</b>\n\n"
+        "Выберите тип обращения:"
+    )
+
+    from app.keyboards.user_kb import get_support_menu
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_support_menu())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "try_again")
+async def try_again_handler(callback: CallbackQuery):
+    """Handle try again button"""
+    await callback.message.delete()
+    await callback.message.answer(
+        "📸 Отправьте мне изображение, с которого нужно удалить фон.\n\n"
+        "💡 Для лучшего результата используйте качественные фото с хорошим освещением."
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "show_packages")
+async def show_packages_handler(callback: CallbackQuery):
+    """Handle show packages button"""
+    db = get_db()
+    async with db.get_session() as session:
+        packages = await get_all_packages(session)
+        balance = await get_user_balance(session, callback.from_user.id)
+
+    packages_list = [
+        {
+            "id": p.id,
+            "name": p.name,
+            "images_count": p.images_count,
+            "price_rub": float(p.price_rub)
+        }
+        for p in packages
+    ]
+
+    text = (
+        "💎 <b>Доступные пакеты:</b>\n\n"
+        f"🎁 Бесплатно: 3 изображения (осталось: {balance['free']})\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "Выберите пакет для покупки:"
+    )
+
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_packages_keyboard(packages_list))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "check_balance")
+async def check_balance_handler(callback: CallbackQuery):
+    """Handle check balance button"""
+    db = get_db()
+    async with db.get_session() as session:
+        balance = await get_user_balance(session, callback.from_user.id)
+
+    text = (
+        "📊 <b>Ваш баланс:</b>\n\n"
+        f"🎁 Бесплатных изображений: {balance['free']}\n"
+        f"💎 Оплаченных изображений: {balance['paid']}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📸 Всего доступно: {balance['total']}"
+    )
+
+    if balance['total'] == 0:
+        text += "\n\n💰 У вас закончились изображения. Купите пакет для продолжения работы!"
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_buy_package_keyboard())
+    elif balance['total'] <= 3:
+        text += "\n\n💡 Рекомендуем пополнить баланс заранее!"
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_low_balance_keyboard())
+    else:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_back_keyboard())
+
     await callback.answer()
 
 
@@ -143,7 +327,7 @@ async def process_image_handler(message: Message):
             await message.answer(
                 "❌ У вас закончились изображения!\n\n"
                 "💎 Купите пакет для продолжения работы.",
-                reply_markup=get_main_menu()
+                reply_markup=get_buy_package_keyboard()
             )
             return
 
@@ -197,22 +381,43 @@ async def process_image_handler(message: Message):
                 # Get new balance
                 new_balance = await get_user_balance(session, message.from_user.id)
 
-                await message.answer_photo(
-                    output_file,
-                    caption=f"✅ Готово! Фон успешно удален.\n\n📊 Осталось изображений: {new_balance['total']}"
-                )
+                caption = f"✅ Готово! Фон успешно удален.\n\n📊 Осталось изображений: {new_balance['total']}"
+
+                # Add contextual message based on balance
+                if new_balance['total'] == 0:
+                    caption += "\n\n⚠️ Это была ваша последняя обработка!"
+                elif new_balance['total'] <= 2:
+                    caption += f"\n\n💡 Осталось совсем немного обработок!"
+
+                # Send result with optional keyboard
+                if new_balance['total'] == 0:
+                    await message.answer_photo(output_file, caption=caption)
+                    await message.answer(
+                        "💎 Хотите продолжить работу? Купите пакет изображений!",
+                        reply_markup=get_buy_package_keyboard()
+                    )
+                elif new_balance['total'] <= 2:
+                    await message.answer_photo(output_file, caption=caption)
+                    await message.answer(
+                        "💡 Рекомендуем пополнить баланс заранее!",
+                        reply_markup=get_low_balance_keyboard()
+                    )
+                else:
+                    await message.answer_photo(output_file, caption=caption)
 
                 await status_msg.delete()
             else:
                 await status_msg.edit_text(
                     f"❌ Ошибка обработки: {result['error']}\n\n"
-                    "Попробуйте другое фото или обратитесь в поддержку."
+                    "Попробуйте другое фото или обратитесь в поддержку.",
+                    reply_markup=get_support_contact_keyboard()
                 )
 
         except Exception as e:
             await status_msg.edit_text(
                 "❌ Произошла ошибка при обработке изображения.\n\n"
-                "Попробуйте еще раз или обратитесь в поддержку."
+                "Попробуйте еще раз или обратитесь в поддержку.",
+                reply_markup=get_support_contact_keyboard()
             )
             print(f"Error processing image: {str(e)}")
 
