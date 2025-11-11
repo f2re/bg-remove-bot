@@ -4,10 +4,70 @@ import logging
 from io import BytesIO
 from typing import Optional, Dict
 from PIL import Image
+import numpy as np
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def remove_green_screen(image_bytes: bytes, tolerance: int = 50) -> bytes:
+    """
+    Convert green screen background to transparency using chroma keying
+
+    Args:
+        image_bytes: Image bytes with green screen background
+        tolerance: Color tolerance for green detection (0-255, higher = more aggressive)
+
+    Returns:
+        Image bytes with transparent background
+    """
+    try:
+        # Open image and convert to RGBA
+        img = Image.open(BytesIO(image_bytes))
+        if img.mode != 'RGBA':
+            img = img.convert('RGBA')
+
+        # Convert to numpy array for efficient processing
+        data = np.array(img)
+
+        # Define target green color (RGB: 0, 255, 0)
+        target_green = np.array([0, 255, 0])
+
+        # Calculate color distance from target green for each pixel
+        # We only check RGB channels (first 3 channels)
+        diff = np.abs(data[:, :, :3] - target_green)
+
+        # Create mask: pixels are considered green if all RGB channels are within tolerance
+        # For green (0, 255, 0), we want:
+        # - R channel close to 0
+        # - G channel close to 255
+        # - B channel close to 0
+        is_green = (
+            (diff[:, :, 0] < tolerance) &  # R close to 0
+            (diff[:, :, 1] < tolerance) &  # G close to 255
+            (diff[:, :, 2] < tolerance)    # B close to 0
+        )
+
+        # Set alpha channel to 0 (fully transparent) for green pixels
+        data[is_green, 3] = 0
+
+        # Convert back to PIL Image
+        result = Image.fromarray(data, 'RGBA')
+
+        # Save to bytes
+        output = BytesIO()
+        result.save(output, format='PNG')
+        output.seek(0)
+
+        logger.info(f"Green screen removal completed. Processed {np.sum(is_green)} pixels to transparent")
+
+        return output.getvalue()
+
+    except Exception as e:
+        logger.error(f"Error in remove_green_screen: {str(e)}")
+        # Return original image if processing fails
+        return image_bytes
 
 
 class OpenRouterService:
@@ -153,9 +213,14 @@ class OpenRouterService:
                                 Image.open(BytesIO(processed_image_bytes))
 
                                 logger.info("Successfully extracted processed image from API response")
+
+                                # Apply chroma key to convert green screen to transparency
+                                logger.info("Applying chroma key to remove green screen background")
+                                transparent_image_bytes = remove_green_screen(processed_image_bytes)
+
                                 return {
                                     "success": True,
-                                    "image_bytes": processed_image_bytes,
+                                    "image_bytes": transparent_image_bytes,
                                     "error": None
                                 }
                             else:
@@ -171,9 +236,13 @@ class OpenRouterService:
                                     processed_image_bytes = base64.b64decode(base64_part)
                                     Image.open(BytesIO(processed_image_bytes))  # Validate
 
+                                    # Apply chroma key to convert green screen to transparency
+                                    logger.info("Applying chroma key to remove green screen background (fallback path)")
+                                    transparent_image_bytes = remove_green_screen(processed_image_bytes)
+
                                     return {
                                         "success": True,
-                                        "image_bytes": processed_image_bytes,
+                                        "image_bytes": transparent_image_bytes,
                                         "error": None
                                     }
                                 else:
