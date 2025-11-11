@@ -105,3 +105,38 @@ def get_back_keyboard() -> InlineKeyboardMarkup:
         ]
     )
     return keyboard
+
+
+def get_support_contact_keyboard() -> InlineKeyboardMarkup:
+    """Get support contact keyboard (for errors)"""
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💬 Обратиться в поддержку", callback_data="contact_support")],
+            [InlineKeyboardButton(text="🔄 Попробовать снова", callback_data="try_again")],
+            [InlineKeyboardButton(text="◀️ В главное меню", callback_data="back_to_menu")]
+        ]
+    )
+    return keyboard
+
+
+def get_buy_package_keyboard() -> InlineKeyboardMarkup:
+    """Get buy package keyboard (when balance is zero)"""
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💎 Купить пакет", callback_data="show_packages")],
+            [InlineKeyboardButton(text="📊 Проверить баланс", callback_data="check_balance")],
+            [InlineKeyboardButton(text="◀️ В главное меню", callback_data="back_to_menu")]
+        ]
+    )
+    return keyboard
+
+
+def get_low_balance_keyboard() -> InlineKeyboardMarkup:
+    """Get low balance keyboard (when balance is low but not zero)"""
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💎 Купить еще", callback_data="show_packages")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
+        ]
+    )
+    return keyboard
