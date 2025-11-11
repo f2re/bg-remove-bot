@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Optional
 
 
 class Settings(BaseSettings):
@@ -7,12 +7,13 @@ class Settings(BaseSettings):
     BOT_TOKEN: str
     ADMIN_IDS: str
 
-    # Database
+    # Database - can use either DATABASE_URL or individual DB_* variables
+    DATABASE_URL: Optional[str] = None
     DB_HOST: str = "localhost"
     DB_PORT: int = 5432
-    DB_NAME: str = "bg_removal_bot"
+    DB_NAME: str = "raffle_bot"
     DB_USER: str = "postgres"
-    DB_PASSWORD: str
+    DB_PASSWORD: str = ""
 
     # OpenRouter
     OPENROUTER_API_KEY: str
@@ -42,6 +43,10 @@ class Settings(BaseSettings):
     @property
     def database_url(self) -> str:
         """Get async database URL for PostgreSQL"""
+        # If DATABASE_URL is set, use it directly
+        if self.DATABASE_URL:
+            return self.DATABASE_URL
+        # Otherwise, construct from individual components
         return f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
     @property
