@@ -1,6 +1,6 @@
 # Background Removal Telegram Bot
 
-Telegram бот для удаления фона с изображений с использованием AI и интеграцией платежей через Robokassa.
+Telegram бот для удаления фона с изображений с использованием AI (Google Gemini 2.5 Flash Image) и интеграцией платежей через Robokassa.
 
 ## Возможности
 
@@ -64,13 +64,49 @@ Telegram бот для удаления фона с изображений с и
 │   └── script.py.mako
 ├── static/
 │   └── legal/                 # PDF документы
-├── .env.example
+├── .env.example               # Пример конфигурации
 ├── .gitignore
-├── requirements.txt
-├── docker-compose.yml
-├── Dockerfile
-└── README.md
+├── requirements.txt           # Python зависимости
+├── docker-compose.yml         # Docker Compose конфигурация
+├── Dockerfile                 # Docker образ
+├── bg-remove-bot.service      # Systemd unit file
+├── start.sh                   # Скрипт запуска для systemd
+├── install.sh                 # Автоматическая установка
+├── update.sh                  # Автоматическое обновление
+├── DEPLOY.md                  # Детальная документация по развертыванию
+├── CLAUDE.md                  # Инструкции для Claude Code
+└── README.md                  # Основная документация
 ```
+
+### Описание скриптов
+
+| Скрипт | Описание | Использование |
+|--------|----------|---------------|
+| `start.sh` | Запуск бота с проверками | Используется systemd для запуска бота |
+| `install.sh` | Автоматическая установка | `REPO_URL=<url> sudo bash install.sh` |
+| `update.sh` | Автоматическое обновление | `sudo bash /opt/bg-remove-bot/update.sh` |
+
+**start.sh** - производственный скрипт запуска:
+- Загружает переменные из .env
+- Активирует виртуальное окружение
+- Проверяет подключение к БД
+- Применяет миграции
+- Запускает бота
+
+**install.sh** - полная автоматическая установка:
+- Устанавливает системные зависимости
+- Настраивает PostgreSQL с пользователем и БД
+- Клонирует репозиторий
+- Создает venv и устанавливает зависимости
+- Применяет миграции
+- Настраивает systemd сервис
+
+**update.sh** - безопасное обновление:
+- Создает резервную копию БД
+- Останавливает сервис
+- Обновляет код и зависимости
+- Применяет новые миграции
+- Перезапускает сервис
 
 ## Установка и запуск
 
@@ -92,14 +128,15 @@ cp .env.example .env
 Обязательные параметры:
 - `BOT_TOKEN` - токен вашего бота от @BotFather
 - `ADMIN_IDS` - ID администраторов через запятую
-- `DATABASE_URL` - полный URL подключения к PostgreSQL (рекомендуется для локальной разработки)
+- `DATABASE_URL` - полный URL подключения к PostgreSQL (рекомендуется)
   - Формат: `postgresql+asyncpg://USER:PASSWORD@HOST:PORT/DATABASE`
-  - Пример: `postgresql+asyncpg://postgres:postgres@localhost:5432/raffle_bot`
+  - Пример: `postgresql+asyncpg://bgremove_user:your_secure_password@localhost:5432/bg_removal_bot`
   - Альтернатива: можно использовать отдельные переменные `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`
-- `OPENROUTER_API_KEY` - API ключ OpenRouter
-- `ROBOKASSA_LOGIN` - логин в Robokassa
-- `ROBOKASSA_PASSWORD1` - пароль 1 Robokassa
-- `ROBOKASSA_PASSWORD2` - пароль 2 Robokassa
+- `OPENROUTER_API_KEY` - API ключ OpenRouter (получить на https://openrouter.ai)
+- `OPENROUTER_MODEL` - модель для обработки (по умолчанию: `google/gemini-2.5-flash-image-preview`)
+- `ROBOKASSA_LOGIN` - логин магазина в Robokassa
+- `ROBOKASSA_PASSWORD1` - пароль 1 Robokassa (для генерации платежных ссылок)
+- `ROBOKASSA_PASSWORD2` - пароль 2 Robokassa (для проверки webhook'ов)
 
 ### 3. Запуск через Docker
 
@@ -128,14 +165,20 @@ pip install -r requirements.txt
 
 **Вариант A: Локальный PostgreSQL**
 
-Если у вас установлен PostgreSQL локально, создайте базу данных:
+Если у вас установлен PostgreSQL локально, создайте базу данных и пользователя:
 
 ```bash
-# Войдите в psql
-psql -U postgres
+# Войдите в psql как суперпользователь
+sudo -u postgres psql
+
+# Создайте пользователя
+CREATE USER bgremove_user WITH PASSWORD 'your_secure_password';
 
 # Создайте базу данных
-CREATE DATABASE raffle_bot;
+CREATE DATABASE bg_removal_bot OWNER bgremove_user;
+
+# Дайте права пользователю
+GRANT ALL PRIVILEGES ON DATABASE bg_removal_bot TO bgremove_user;
 
 # Выйдите из psql
 \q
@@ -145,10 +188,10 @@ CREATE DATABASE raffle_bot;
 
 ```bash
 docker run -d \
-  --name postgres \
-  -e POSTGRES_DB=raffle_bot \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD=postgres \
+  --name postgres-bgremove \
+  -e POSTGRES_DB=bg_removal_bot \
+  -e POSTGRES_USER=bgremove_user \
+  -e POSTGRES_PASSWORD=your_secure_password \
   -p 5432:5432 \
   postgres:15
 ```
@@ -158,7 +201,7 @@ docker run -d \
 В вашем `.env` файле используйте DATABASE_URL:
 
 ```env
-DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/raffle_bot
+DATABASE_URL=postgresql+asyncpg://bgremove_user:your_secure_password@localhost:5432/bg_removal_bot
 ```
 
 Или используйте отдельные переменные:
@@ -166,9 +209,9 @@ DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/raffle_bot
 ```env
 DB_HOST=localhost
 DB_PORT=5432
-DB_NAME=raffle_bot
-DB_USER=postgres
-DB_PASSWORD=postgres
+DB_NAME=bg_removal_bot
+DB_USER=bgremove_user
+DB_PASSWORD=your_secure_password
 ```
 
 #### Шаг 4: Запуск миграций
@@ -264,22 +307,22 @@ alembic downgrade -1
 
 ```env
 # Telegram
-BOT_TOKEN=your_bot_token
+BOT_TOKEN=your_bot_token_here
 ADMIN_IDS=123456789,987654321
 
 # Database - Вариант 1: Единая строка подключения (рекомендуется)
-DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/raffle_bot
+DATABASE_URL=postgresql+asyncpg://bgremove_user:your_secure_password@localhost:5432/bg_removal_bot
 
 # Database - Вариант 2: Отдельные параметры (игнорируются если задан DATABASE_URL)
 # DB_HOST=localhost
 # DB_PORT=5432
-# DB_NAME=raffle_bot
-# DB_USER=postgres
-# DB_PASSWORD=your_password
+# DB_NAME=bg_removal_bot
+# DB_USER=bgremove_user
+# DB_PASSWORD=your_secure_password
 
 # OpenRouter
-OPENROUTER_API_KEY=your_api_key
-OPENROUTER_MODEL=nano-banana-ai/model-name
+OPENROUTER_API_KEY=your_api_key_here
+OPENROUTER_MODEL=google/gemini-2.5-flash-image-preview
 
 # Robokassa
 ROBOKASSA_LOGIN=your_login
@@ -288,13 +331,65 @@ ROBOKASSA_PASSWORD2=your_password2
 ROBOKASSA_TEST_MODE=False
 
 # Pricing (в копейках)
-PACKAGE_1_PRICE=5000
-PACKAGE_5_PRICE=20000
-PACKAGE_10_PRICE=35000
-PACKAGE_50_PRICE=150000
+PACKAGE_1_PRICE=5000    # 50 рублей
+PACKAGE_5_PRICE=20000   # 200 рублей
+PACKAGE_10_PRICE=35000  # 350 рублей
+PACKAGE_50_PRICE=150000 # 1500 рублей
 
-# Free images
+# Free images for new users
 FREE_IMAGES_COUNT=3
+
+# Logging (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+LOG_LEVEL=INFO
+```
+
+## Быстрый старт
+
+### Локальная разработка
+
+```bash
+# 1. Клонируйте репозиторий
+git clone <repository-url>
+cd bg-remove-bot
+
+# 2. Настройте окружение
+cp .env.example .env
+nano .env  # Заполните необходимые переменные
+
+# 3. Создайте БД PostgreSQL
+sudo -u postgres psql
+CREATE USER bgremove_user WITH PASSWORD 'your_password';
+CREATE DATABASE bg_removal_bot OWNER bgremove_user;
+GRANT ALL PRIVILEGES ON DATABASE bg_removal_bot TO bgremove_user;
+\q
+
+# 4. Установите зависимости
+python3.11 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# 5. Запустите миграции
+alembic upgrade head
+
+# 6. Запустите бота
+python -m app.bot
+```
+
+### Production с systemd
+
+```bash
+# Полная инструкция в разделе "Production Deployment"
+sudo cp bg-remove-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now bg-remove-bot
+sudo journalctl -u bg-remove-bot -f
+```
+
+### Docker Compose
+
+```bash
+docker-compose up -d
+docker-compose logs -f bot
 ```
 
 ## Использование
@@ -338,7 +433,13 @@ FREE_IMAGES_COUNT=3
 
 Для работы требуется API ключ OpenRouter. Получить можно на [openrouter.ai](https://openrouter.ai).
 
-Модель по умолчанию: `nano-banana-ai/model-name`
+Модель по умолчанию: `google/gemini-2.5-flash-image-preview`
+
+Эта модель поддерживает:
+- Входные изображения для анализа
+- Выходные изображения (генерация)
+- Прозрачный фон (PNG с альфа-каналом)
+- Высокое качество обработки краев (волосы, мех, стекло)
 
 ### Robokassa
 
@@ -347,6 +448,209 @@ FREE_IMAGES_COUNT=3
 2. Создать магазин
 3. Получить логин и пароли (Password#1 и Password#2)
 4. Настроить ResultURL для webhook'ов
+
+## Production Deployment (Production развертывание)
+
+### Автоматическая установка (рекомендуется)
+
+Для быстрой установки используйте готовый скрипт:
+
+```bash
+# Скачайте и запустите скрипт установки
+wget https://raw.githubusercontent.com/yourusername/bg-remove-bot/main/install.sh
+chmod +x install.sh
+
+# Запустите установку (замените URL на ваш репозиторий)
+REPO_URL=https://github.com/yourusername/bg-remove-bot.git sudo bash install.sh
+```
+
+Скрипт автоматически:
+- Установит все зависимости
+- Настроит PostgreSQL с безопасным паролем
+- Клонирует репозиторий
+- Создаст виртуальное окружение
+- Применит миграции
+- Настроит systemd сервис
+- Запустит бота
+
+### Обновление приложения
+
+```bash
+# Автоматическое обновление
+sudo bash /opt/bg-remove-bot/update.sh
+
+# Или с автоподтверждением
+sudo bash /opt/bg-remove-bot/update.sh --auto
+```
+
+Скрипт обновления:
+- Создаст backup базы данных
+- Остановит сервис
+- Обновит код из Git
+- Обновит зависимости
+- Применит миграции
+- Запустит сервис
+
+### Ручная установка на сервер с systemd
+
+#### 1. Подготовка сервера
+
+```bash
+# Обновите систему
+sudo apt update && sudo apt upgrade -y
+
+# Установите необходимые пакеты
+sudo apt install -y python3.11 python3.11-venv python3-pip postgresql nginx git
+
+# Создайте пользователя для приложения (если используете www-data, пропустите этот шаг)
+sudo useradd -r -s /bin/bash -d /opt/bg-remove-bot bgremove
+```
+
+#### 2. Настройка PostgreSQL
+
+```bash
+# Переключитесь на пользователя postgres
+sudo -u postgres psql
+
+# В psql выполните:
+CREATE USER bgremove_user WITH PASSWORD 'your_very_secure_password';
+CREATE DATABASE bg_removal_bot OWNER bgremove_user;
+GRANT ALL PRIVILEGES ON DATABASE bg_removal_bot TO bgremove_user;
+\q
+```
+
+#### 3. Установка приложения
+
+```bash
+# Создайте директорию для приложения
+sudo mkdir -p /opt/bg-remove-bot
+sudo chown www-data:www-data /opt/bg-remove-bot
+
+# Клонируйте репозиторий
+cd /opt/bg-remove-bot
+sudo -u www-data git clone <your-repo-url> .
+
+# Создайте виртуальное окружение
+sudo -u www-data python3.11 -m venv venv
+
+# Активируйте и установите зависимости
+sudo -u www-data /opt/bg-remove-bot/venv/bin/pip install --upgrade pip
+sudo -u www-data /opt/bg-remove-bot/venv/bin/pip install -r requirements.txt
+
+# Создайте .env файл
+sudo -u www-data cp .env.example .env
+sudo -u www-data nano .env  # Отредактируйте конфигурацию
+```
+
+#### 4. Настройте переменные окружения в .env
+
+```env
+BOT_TOKEN=your_bot_token_here
+ADMIN_IDS=123456789
+DATABASE_URL=postgresql+asyncpg://bgremove_user:your_very_secure_password@localhost:5432/bg_removal_bot
+OPENROUTER_API_KEY=your_api_key_here
+OPENROUTER_MODEL=google/gemini-2.5-flash-image-preview
+ROBOKASSA_LOGIN=your_shop_login
+ROBOKASSA_PASSWORD1=your_password1
+ROBOKASSA_PASSWORD2=your_password2
+ROBOKASSA_TEST_MODE=False
+LOG_LEVEL=INFO
+```
+
+#### 5. Запустите миграции
+
+```bash
+cd /opt/bg-remove-bot
+sudo -u www-data /opt/bg-remove-bot/venv/bin/alembic upgrade head
+```
+
+#### 6. Установите systemd сервис
+
+```bash
+# Скопируйте файл сервиса
+sudo cp /opt/bg-remove-bot/bg-remove-bot.service /etc/systemd/system/
+
+# Перезагрузите systemd
+sudo systemctl daemon-reload
+
+# Включите автозапуск
+sudo systemctl enable bg-remove-bot
+
+# Запустите сервис
+sudo systemctl start bg-remove-bot
+
+# Проверьте статус
+sudo systemctl status bg-remove-bot
+```
+
+#### 7. Управление сервисом
+
+```bash
+# Посмотреть логи
+sudo journalctl -u bg-remove-bot -f
+
+# Перезапустить бот
+sudo systemctl restart bg-remove-bot
+
+# Остановить бот
+sudo systemctl stop bg-remove-bot
+
+# Посмотреть статус
+sudo systemctl status bg-remove-bot
+```
+
+#### 8. Обновление приложения
+
+```bash
+# Остановите сервис
+sudo systemctl stop bg-remove-bot
+
+# Обновите код
+cd /opt/bg-remove-bot
+sudo -u www-data git pull
+
+# Обновите зависимости (если изменились)
+sudo -u www-data /opt/bg-remove-bot/venv/bin/pip install -r requirements.txt
+
+# Примените миграции
+sudo -u www-data /opt/bg-remove-bot/venv/bin/alembic upgrade head
+
+# Запустите сервис
+sudo systemctl start bg-remove-bot
+```
+
+### Настройка webhook для Robokassa (опционально)
+
+Если вам нужны webhook'и для обработки платежей в реальном времени:
+
+```bash
+# Установите и настройте nginx как reverse proxy
+sudo apt install nginx
+
+# Создайте конфигурацию nginx
+sudo nano /etc/nginx/sites-available/bg-remove-bot
+
+# Добавьте:
+server {
+    listen 80;
+    server_name your-domain.com;
+
+    location /webhook/robokassa {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+
+# Активируйте конфигурацию
+sudo ln -s /etc/nginx/sites-available/bg-remove-bot /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+
+# Настройте SSL через Let's Encrypt
+sudo apt install certbot python3-certbot-nginx
+sudo certbot --nginx -d your-domain.com
+```
 
 ## Разработка
 

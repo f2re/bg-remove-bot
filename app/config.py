@@ -11,8 +11,8 @@ class Settings(BaseSettings):
     DATABASE_URL: Optional[str] = None
     DB_HOST: str = "localhost"
     DB_PORT: int = 5432
-    DB_NAME: str = "raffle_bot"
-    DB_USER: str = "postgres"
+    DB_NAME: str = "bg_removal_bot"
+    DB_USER: str = "bgremove_user"
     DB_PASSWORD: str = ""
 
     # OpenRouter
