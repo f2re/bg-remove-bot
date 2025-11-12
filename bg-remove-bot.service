@@ -1,0 +1,27 @@
+[Unit]
+Description=Background Removal Telegram Bot
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/bg-remove-bot
+Environment="PATH=/opt/bg-remove-bot/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/opt/bg-remove-bot/venv/bin/python -m app.bot
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bg-remove-bot
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/bg-remove-bot
+
+[Install]
+WantedBy=multi-user.target
