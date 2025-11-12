@@ -11,13 +11,14 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-def remove_green_screen(image_bytes: bytes, tolerance: int = 50) -> bytes:
+def remove_colored_background(image_bytes: bytes, target_color: tuple = (0, 255, 0), tolerance: int = 50) -> bytes:
     """
-    Convert green screen background to transparency using chroma keying
+    Convert colored background to transparency using chroma keying
 
     Args:
-        image_bytes: Image bytes with green screen background
-        tolerance: Color tolerance for green detection (0-255, higher = more aggressive)
+        image_bytes: Image bytes with colored background
+        target_color: RGB tuple of color to remove (default: green)
+        tolerance: Color tolerance for detection (0-255, higher = more aggressive)
 
     Returns:
         Image bytes with transparent background
@@ -31,26 +32,22 @@ def remove_green_screen(image_bytes: bytes, tolerance: int = 50) -> bytes:
         # Convert to numpy array for efficient processing
         data = np.array(img)
 
-        # Define target green color (RGB: 0, 255, 0)
-        target_green = np.array([0, 255, 0])
+        # Define target color
+        target = np.array(target_color)
 
-        # Calculate color distance from target green for each pixel
+        # Calculate color distance from target for each pixel
         # We only check RGB channels (first 3 channels)
-        diff = np.abs(data[:, :, :3] - target_green)
+        diff = np.abs(data[:, :, :3] - target)
 
-        # Create mask: pixels are considered green if all RGB channels are within tolerance
-        # For green (0, 255, 0), we want:
-        # - R channel close to 0
-        # - G channel close to 255
-        # - B channel close to 0
-        is_green = (
-            (diff[:, :, 0] < tolerance) &  # R close to 0
-            (diff[:, :, 1] < tolerance) &  # G close to 255
-            (diff[:, :, 2] < tolerance)    # B close to 0
+        # Create mask: pixels are considered matching if all RGB channels are within tolerance
+        is_target_color = (
+            (diff[:, :, 0] < tolerance) &
+            (diff[:, :, 1] < tolerance) &
+            (diff[:, :, 2] < tolerance)
         )
 
-        # Set alpha channel to 0 (fully transparent) for green pixels
-        data[is_green, 3] = 0
+        # Set alpha channel to 0 (fully transparent) for matching pixels
+        data[is_target_color, 3] = 0
 
         # Convert back to PIL Image
         result = Image.fromarray(data, 'RGBA')
@@ -60,14 +57,30 @@ def remove_green_screen(image_bytes: bytes, tolerance: int = 50) -> bytes:
         result.save(output, format='PNG')
         output.seek(0)
 
-        logger.info(f"Green screen removal completed. Processed {np.sum(is_green)} pixels to transparent")
+        logger.info(f"Chroma key removal completed for color {target_color}. Processed {np.sum(is_target_color)} pixels to transparent")
 
         return output.getvalue()
 
     except Exception as e:
-        logger.error(f"Error in remove_green_screen: {str(e)}")
+        logger.error(f"Error in remove_colored_background: {str(e)}")
         # Return original image if processing fails
         return image_bytes
+
+
+# Backward compatibility
+def remove_green_screen(image_bytes: bytes, tolerance: int = 50) -> bytes:
+    """
+    Convert green screen background to transparency using chroma keying
+    (Backward compatibility wrapper)
+
+    Args:
+        image_bytes: Image bytes with green screen background
+        tolerance: Color tolerance for green detection (0-255, higher = more aggressive)
+
+    Returns:
+        Image bytes with transparent background
+    """
+    return remove_colored_background(image_bytes, target_color=(0, 255, 0), tolerance=tolerance)
 
 
 class OpenRouterService:
@@ -80,13 +93,14 @@ class OpenRouterService:
         self.model = settings.OPENROUTER_MODEL or "google/gemini-2.5-flash-image-preview"
         self.base_url = "https://openrouter.ai/api/v1/chat/completions"
 
-    async def remove_background(self, image_bytes: bytes, prompt: str) -> Dict:
+    async def remove_background(self, image_bytes: bytes, prompt: str, background_color: tuple = (0, 255, 0)) -> Dict:
         """
         Remove background from image using OpenRouter API with image editing model
 
         Args:
             image_bytes: Image bytes
             prompt: Prompt for background removal (должен быть специфичным)
+            background_color: RGB tuple for temporary background color (will be removed via chroma key)
 
         Returns:
             dict with keys: success (bool), image_bytes (bytes), error (str)
@@ -214,9 +228,9 @@ class OpenRouterService:
 
                                 logger.info("Successfully extracted processed image from API response")
 
-                                # Apply chroma key to convert green screen to transparency
-                                logger.info("Applying chroma key to remove green screen background")
-                                transparent_image_bytes = remove_green_screen(processed_image_bytes)
+                                # Apply chroma key to convert colored background to transparency
+                                logger.info(f"Applying chroma key to remove {background_color} background")
+                                transparent_image_bytes = remove_colored_background(processed_image_bytes, target_color=background_color)
 
                                 return {
                                     "success": True,
@@ -236,9 +250,9 @@ class OpenRouterService:
                                     processed_image_bytes = base64.b64decode(base64_part)
                                     Image.open(BytesIO(processed_image_bytes))  # Validate
 
-                                    # Apply chroma key to convert green screen to transparency
-                                    logger.info("Applying chroma key to remove green screen background (fallback path)")
-                                    transparent_image_bytes = remove_green_screen(processed_image_bytes)
+                                    # Apply chroma key to convert colored background to transparency
+                                    logger.info(f"Applying chroma key to remove {background_color} background (fallback path)")
+                                    transparent_image_bytes = remove_colored_background(processed_image_bytes, target_color=background_color)
 
                                     return {
                                         "success": True,

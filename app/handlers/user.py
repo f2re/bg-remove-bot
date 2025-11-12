@@ -422,10 +422,130 @@ async def process_image_handler(message: Message):
             print(f"Error processing image: {str(e)}")
 
 
+@router.message(F.document)
+@error_handler
+async def process_document_handler(message: Message):
+    """Handle document (lossless) image processing"""
+    # Check if document is an image
+    if not message.document.mime_type or not message.document.mime_type.startswith('image/'):
+        await message.answer("⚠️ Пожалуйста, отправьте файл изображения (PNG, JPG и т.д.)")
+        return
+
+    # Check balance
+    db = get_db()
+    async with db.get_session() as session:
+        balance = await get_user_balance(session, message.from_user.id)
+
+        if balance['total'] <= 0:
+            await message.answer(
+                "❌ У вас закончились изображения!\n\n"
+                "💎 Купите пакет для продолжения работы.",
+                reply_markup=get_buy_package_keyboard()
+            )
+            return
+
+        # Show processing message
+        status_msg = await message.answer("⏳ Обрабатываю изображение без потери качества...")
+
+        try:
+            # Download document
+            file = await message.bot.get_file(message.document.file_id)
+            file_bytes = await message.bot.download_file(file.file_path)
+            image_bytes = file_bytes.read()
+
+            # Analyze image and select optimal background color
+            processor = ImageProcessor()
+
+            # Select background color based on subject analysis
+            background_color = processor.select_alternative_background_color(image_bytes)
+
+            # Analyze image for prompt building
+            analysis = processor.analyze_image(image_bytes, detect_subject_color=True)
+
+            # Build prompt with selected background color
+            prompt = PromptBuilder.build_prompt(analysis, background_color=background_color)
+
+            # Process image with OpenRouter
+            openrouter = OpenRouterService()
+            result = await openrouter.remove_background(image_bytes, prompt, background_color=background_color)
+
+            if result['success']:
+                # Send result as document (lossless)
+                from aiogram.types import BufferedInputFile
+
+                output_file = BufferedInputFile(
+                    result['image_bytes'],
+                    filename=f"nobg_{message.from_user.id}_{message.document.file_unique_id}.png"
+                )
+
+                # Determine if using free or paid image
+                is_free = balance['free'] > 0
+
+                # Decrease balance
+                await decrease_balance(session, message.from_user.id)
+
+                # Update stats
+                await update_user_stats(session, message.from_user.id)
+
+                # Save to database
+                await save_processed_image(
+                    session,
+                    message.from_user.id,
+                    message.document.file_id,
+                    "processed_file_id",  # Would be the actual file_id after upload
+                    prompt,
+                    is_free
+                )
+
+                # Get new balance
+                new_balance = await get_user_balance(session, message.from_user.id)
+
+                caption = f"✅ Готово! Фон успешно удален (без потери качества).\n\n📊 Осталось изображений: {new_balance['total']}"
+
+                # Add contextual message based on balance
+                if new_balance['total'] == 0:
+                    caption += "\n\n⚠️ Это была ваша последняя обработка!"
+                elif new_balance['total'] <= 2:
+                    caption += f"\n\n💡 Осталось совсем немного обработок!"
+
+                # Send result as document with optional keyboard
+                if new_balance['total'] == 0:
+                    await message.answer_document(output_file, caption=caption)
+                    await message.answer(
+                        "💎 Хотите продолжить работу? Купите пакет изображений!",
+                        reply_markup=get_buy_package_keyboard()
+                    )
+                elif new_balance['total'] <= 2:
+                    await message.answer_document(output_file, caption=caption)
+                    await message.answer(
+                        "💡 Рекомендуем пополнить баланс заранее!",
+                        reply_markup=get_low_balance_keyboard()
+                    )
+                else:
+                    await message.answer_document(output_file, caption=caption)
+
+                await status_msg.delete()
+            else:
+                await status_msg.edit_text(
+                    f"❌ Ошибка обработки: {result['error']}\n\n"
+                    "Попробуйте другое фото или обратитесь в поддержку.",
+                    reply_markup=get_support_contact_keyboard()
+                )
+
+        except Exception as e:
+            await status_msg.edit_text(
+                "❌ Произошла ошибка при обработке изображения.\n\n"
+                "Попробуйте еще раз или обратитесь в поддержку.",
+                reply_markup=get_support_contact_keyboard()
+            )
+            print(f"Error processing document: {str(e)}")
+
+
 @router.message(F.text == "📸 Обработать изображение")
 async def process_image_request_handler(message: Message):
     """Handle image processing request"""
     await message.answer(
         "📸 Отправьте мне изображение, с которого нужно удалить фон.\n\n"
-        "💡 Для лучшего результата используйте качественные фото с хорошим освещением."
+        "💡 Для лучшего результата используйте качественные фото с хорошим освещением.\n"
+        "💡 Отправьте как документ для обработки без потери качества!"
     )
