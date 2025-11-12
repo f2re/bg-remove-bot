@@ -239,7 +239,7 @@ async def support_reply_command(message: Message):
         if len(parts) < 3:
             await message.answer(
                 "❌ <b>Использование:</b>\n"
-                "/support_reply <ticket_id> <message>\n\n"
+                "/support_reply &lt;ticket_id&gt; &lt;message&gt;\n\n"
                 "<b>Пример:</b>\n"
                 "/support_reply 123 Ваш вопрос принят, мы работаем над решением",
                 parse_mode="HTML"
@@ -252,7 +252,7 @@ async def support_reply_command(message: Message):
     except (IndexError, ValueError):
         await message.answer(
             "❌ <b>Ошибка формата</b>\n\n"
-            "Используйте: /support_reply <ticket_id> <message>",
+            "Используйте: /support_reply &lt;ticket_id&gt; &lt;message&gt;",
             parse_mode="HTML"
         )
         return
