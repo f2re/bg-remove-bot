@@ -1,34 +1,39 @@
 version: '3.8'
 
 services:
-  bot:
+  #   bot:
+  #   build: .
+  #  env_file: .env
+  #    depends_on:
+  #    -bg_removal_bot
+  #    - redis
+  #  restart: unless-stopped
+  #  volumes:
+  #    - ./app:/app/app
+  #    - ./static:/app/static
+  
+  bg_removal_bot:
     build: .
-    env_file: .env
+    container_name: bg_removal_bot
     depends_on:
-      - db
       - redis
+    environment:
+      DATABASE_URL: postgresql+asyncpg://bgremove_user:BgRemove-2000@timecapsule_postgres:5432/bg_removal_bot
+    env_file:
+      - .env
+    networks:
+      - postgres_timecapsule_network
     restart: unless-stopped
     volumes:
       - ./app:/app/app
       - ./static:/app/static
 
-  db:
-    image: postgres:15
-    environment:
-      POSTGRES_DB: ${DB_NAME}
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    restart: unless-stopped
-
   redis:
     image: redis:7-alpine
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
-volumes:
-  postgres_data:
+networks:
+  postgres_timecapsule_network:
+    external: true
