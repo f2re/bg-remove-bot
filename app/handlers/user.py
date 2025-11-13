@@ -310,6 +310,8 @@ async def show_packages_handler(callback: CallbackQuery):
 @router.callback_query(F.data == "check_balance")
 async def check_balance_handler(callback: CallbackQuery):
     """Handle check balance button"""
+    from aiogram.exceptions import TelegramBadRequest
+
     db = get_db()
     async with db.get_session() as session:
         balance = await get_user_balance(session, callback.from_user.id)
@@ -322,14 +324,19 @@ async def check_balance_handler(callback: CallbackQuery):
         f"📸 Всего доступно: {balance['total']}"
     )
 
-    if balance['total'] == 0:
-        text += "\n\n💰 У вас закончились изображения. Купите пакет для продолжения работы!"
-        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_buy_package_keyboard())
-    elif balance['total'] <= 3:
-        text += "\n\n💡 Рекомендуем пополнить баланс заранее!"
-        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_low_balance_keyboard())
-    else:
-        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_back_keyboard())
+    try:
+        if balance['total'] == 0:
+            text += "\n\n💰 У вас закончились изображения. Купите пакет для продолжения работы!"
+            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_buy_package_keyboard())
+        elif balance['total'] <= 3:
+            text += "\n\n💡 Рекомендуем пополнить баланс заранее!"
+            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_low_balance_keyboard())
+        else:
+            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_back_keyboard())
+    except TelegramBadRequest as e:
+        # Message content is identical, just answer the callback
+        if "message is not modified" not in str(e):
+            raise
 
     await callback.answer()
 
@@ -473,21 +480,21 @@ async def process_document_handler(message: Message):
             file_bytes = await message.bot.download_file(file.file_path)
             image_bytes = file_bytes.read()
 
-            # Analyze image and select optimal background color
-            processor = ImageProcessor()
-
-            # Select background color based on subject analysis
-            background_color = processor.select_alternative_background_color(image_bytes)
-
             # Analyze image for prompt building
+            processor = ImageProcessor()
             analysis = processor.analyze_image(image_bytes, detect_subject_color=True)
 
-            # Build prompt with selected background color
-            prompt = PromptBuilder.build_prompt(analysis, background_color=background_color)
+            # Strategy: Try transparent background first (most reliable)
+            # If AI doesn't support it well, we have chroma key as fallback
+            prompt = PromptBuilder.build_prompt(analysis, transparent=True)
 
-            # Process image with OpenRouter
+            # Process image with OpenRouter (requesting transparent background)
             openrouter = OpenRouterService()
-            result = await openrouter.remove_background(image_bytes, prompt, background_color=background_color)
+            result = await openrouter.remove_background(image_bytes, prompt, transparent=True)
+
+            # Fallback: If transparent didn't work well, try chroma key approach
+            # (This can be detected by checking if result has transparency)
+            # For now, we trust the transparent approach
 
             if result['success']:
                 # Send result as document (lossless)

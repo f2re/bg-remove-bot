@@ -185,7 +185,7 @@ async def admin_reply_ticket(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.message(AdminStates.waiting_for_ticket_reply)
+@router.message(AdminStates.waiting_for_ticket_reply, F.text)
 @admin_only
 async def process_ticket_reply(message: Message, state: FSMContext):
     """Process ticket reply"""
@@ -327,7 +327,7 @@ async def admin_add_images_start(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.message(AdminStates.waiting_for_user_id)
+@router.message(AdminStates.waiting_for_user_id, F.text)
 @admin_only
 async def admin_add_images_user_id(message: Message, state: FSMContext):
     """Process user ID for adding images"""
@@ -351,7 +351,7 @@ async def admin_add_images_user_id(message: Message, state: FSMContext):
     )
 
 
-@router.message(AdminStates.waiting_for_images_count)
+@router.message(AdminStates.waiting_for_images_count, F.text)
 @admin_only
 async def admin_add_images_count(message: Message, state: FSMContext):
     """Process images count for adding"""

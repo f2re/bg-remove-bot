@@ -11,19 +11,101 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-def remove_colored_background(image_bytes: bytes, target_color: tuple = (0, 255, 0), tolerance: int = 50) -> bytes:
+def detect_dominant_background_color(image_bytes: bytes, requested_color: tuple = None, corner_sample_size: int = 50) -> tuple:
     """
-    Convert colored background to transparency using chroma keying
+    Detect the actual dominant background color in the image by analyzing corners
+
+    Args:
+        image_bytes: Image bytes
+        requested_color: The color we requested from AI (for validation)
+        corner_sample_size: Size of corner regions to sample
+
+    Returns:
+        RGB tuple of the detected dominant background color
+    """
+    try:
+        img = Image.open(BytesIO(image_bytes))
+        if img.mode != 'RGB' and img.mode != 'RGBA':
+            img = img.convert('RGB')
+
+        width, height = img.size
+        data = np.array(img)
+
+        # Sample all four corners (background is typically in corners)
+        corners = []
+        sample_size = min(corner_sample_size, width // 4, height // 4)
+
+        # Top-left
+        corners.append(data[:sample_size, :sample_size, :3])
+        # Top-right
+        corners.append(data[:sample_size, -sample_size:, :3])
+        # Bottom-left
+        corners.append(data[-sample_size:, :sample_size, :3])
+        # Bottom-right
+        corners.append(data[-sample_size:, -sample_size:, :3])
+
+        # Combine all corner pixels
+        corner_pixels = np.concatenate([c.reshape(-1, 3) for c in corners])
+
+        # Count unique colors and find most common
+        from collections import Counter
+        color_counts = Counter(map(tuple, corner_pixels))
+
+        if not color_counts:
+            logger.warning("No colors found in corners, using requested color")
+            return requested_color if requested_color else (0, 255, 0)
+
+        # Get top color
+        dominant_color, count = color_counts.most_common(1)[0]
+
+        # If we have a requested color, validate that dominant color is close to it
+        if requested_color:
+            # Calculate color distance
+            distance = np.linalg.norm(np.array(dominant_color) - np.array(requested_color))
+
+            # If distance is reasonable (within 100), use dominant color
+            # If too far, it might not be the background
+            if distance > 150:
+                logger.warning(f"Detected color {dominant_color} is too far from requested {requested_color} (distance: {distance:.1f})")
+                # Try to find a color closer to requested
+                for color, cnt in color_counts.most_common(10):
+                    dist = np.linalg.norm(np.array(color) - np.array(requested_color))
+                    if dist < 150 and cnt > len(corner_pixels) * 0.05:  # At least 5% of corner pixels
+                        dominant_color = color
+                        logger.info(f"Using alternative color {color} (distance: {dist:.1f}, count: {cnt})")
+                        break
+
+        logger.info(f"Detected dominant background color: {dominant_color} (count: {count}, total corner pixels: {len(corner_pixels)})")
+
+        return dominant_color
+
+    except Exception as e:
+        logger.error(f"Error detecting dominant color: {str(e)}")
+        return requested_color if requested_color else (0, 255, 0)
+
+
+def remove_colored_background(image_bytes: bytes, target_color: tuple = (0, 255, 0), tolerance: int = 50, auto_detect: bool = True) -> bytes:
+    """
+    Convert colored background to transparency using chroma keying with smart color detection
 
     Args:
         image_bytes: Image bytes with colored background
         target_color: RGB tuple of color to remove (default: green)
         tolerance: Color tolerance for detection (0-255, higher = more aggressive)
+        auto_detect: If True, automatically detect actual background color instead of using target_color directly
 
     Returns:
         Image bytes with transparent background
     """
     try:
+        # Auto-detect the actual background color if requested
+        if auto_detect:
+            detected_color = detect_dominant_background_color(image_bytes, requested_color=target_color)
+            logger.info(f"Auto-detected background color {detected_color} (requested was {target_color})")
+            actual_target = detected_color
+        else:
+            actual_target = target_color
+
         # Open image and convert to RGBA
         img = Image.open(BytesIO(image_bytes))
         if img.mode != 'RGBA':
@@ -33,7 +115,7 @@ def remove_colored_background(image_bytes: bytes, target_color: tuple = (0, 255,
         data = np.array(img)
 
         # Define target color
-        target = np.array(target_color)
+        target = np.array(actual_target)
 
         # Calculate color distance from target for each pixel
         # We only check RGB channels (first 3 channels)
@@ -57,7 +139,7 @@ def remove_colored_background(image_bytes: bytes, target_color: tuple = (0, 255,
         result.save(output, format='PNG')
         output.seek(0)
 
-        logger.info(f"Chroma key removal completed for color {target_color}. Processed {np.sum(is_target_color)} pixels to transparent")
+        logger.info(f"Chroma key removal completed for color {actual_target}. Processed {np.sum(is_target_color)} pixels to transparent")
 
         return output.getvalue()
 
@@ -93,14 +175,15 @@ class OpenRouterService:
         self.model = settings.OPENROUTER_MODEL or "google/gemini-2.5-flash-image-preview"
         self.base_url = "https://openrouter.ai/api/v1/chat/completions"
 
-    async def remove_background(self, image_bytes: bytes, prompt: str, background_color: tuple = (0, 255, 0)) -> Dict:
+    async def remove_background(self, image_bytes: bytes, prompt: str, background_color: tuple = None, transparent: bool = False) -> Dict:
         """
         Remove background from image using OpenRouter API with image editing model
 
         Args:
             image_bytes: Image bytes
             prompt: Prompt for background removal (должен быть специфичным)
-            background_color: RGB tuple for temporary background color (will be removed via chroma key)
+            background_color: RGB tuple for background color (for white/colored backgrounds)
+            transparent: If True, request transparent background (no chroma keying)
 
         Returns:
             dict with keys: success (bool), image_bytes (bytes), error (str)
@@ -228,13 +311,22 @@ class OpenRouterService:
 
                                 logger.info("Successfully extracted processed image from API response")
 
-                                # Apply chroma key to convert colored background to transparency
-                                logger.info(f"Applying chroma key to remove {background_color} background")
-                                transparent_image_bytes = remove_colored_background(processed_image_bytes, target_color=background_color)
+                                # Apply chroma key only if not requesting transparent directly
+                                if transparent:
+                                    # AI should have generated transparent background directly
+                                    logger.info("Using AI-generated transparent background directly (no chroma keying)")
+                                    final_image_bytes = processed_image_bytes
+                                elif background_color:
+                                    # Apply chroma key to convert colored background to transparency
+                                    logger.info(f"Applying chroma key to remove {background_color} background")
+                                    final_image_bytes = remove_colored_background(processed_image_bytes, target_color=background_color)
+                                else:
+                                    # No post-processing needed (e.g., white background for photos)
+                                    final_image_bytes = processed_image_bytes
 
                                 return {
                                     "success": True,
-                                    "image_bytes": transparent_image_bytes,
+                                    "image_bytes": final_image_bytes,
                                     "error": None
                                 }
                             else:
@@ -250,13 +342,19 @@ class OpenRouterService:
                                     processed_image_bytes = base64.b64decode(base64_part)
                                     Image.open(BytesIO(processed_image_bytes))  # Validate
 
-                                    # Apply chroma key to convert colored background to transparency
-                                    logger.info(f"Applying chroma key to remove {background_color} background (fallback path)")
-                                    transparent_image_bytes = remove_colored_background(processed_image_bytes, target_color=background_color)
+                                    # Apply chroma key only if not requesting transparent directly
+                                    if transparent:
+                                        logger.info("Using AI-generated transparent background directly (fallback path)")
+                                        final_image_bytes = processed_image_bytes
+                                    elif background_color:
+                                        logger.info(f"Applying chroma key to remove {background_color} background (fallback path)")
+                                        final_image_bytes = remove_colored_background(processed_image_bytes, target_color=background_color)
+                                    else:
+                                        final_image_bytes = processed_image_bytes
 
                                     return {
                                         "success": True,
-                                        "image_bytes": transparent_image_bytes,
+                                        "image_bytes": final_image_bytes,
                                         "error": None
                                     }
                                 else:
