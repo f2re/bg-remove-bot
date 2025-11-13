@@ -238,7 +238,7 @@ class OpenRouterService:
                         result = await response.json()
                         logger.info(f"OpenRouter API response received successfully")
                         logger.info(f"Response keys: {result.keys()}")
-                        logger.info(f"Full API response: {result}")
+                        # logger.info(f"Full API response: {result}")
 
                         # Extract image from response
                         # The response contains images in the message content
