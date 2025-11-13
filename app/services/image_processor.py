@@ -259,30 +259,39 @@ class ImageProcessor:
             logger.error(f"Error checking if color is green: {str(e)}")
             return False
 
-    def select_alternative_background_color(self, image_bytes: bytes) -> Tuple[int, int, int]:
+    def select_optimal_chromakey_color(self, image_bytes: bytes) -> Tuple[Tuple[int, int, int], str, float]:
         """
-        Select an alternative background color that doesn't conflict with subject
+        Select optimal chromakey color with MAXIMUM distance from ALL colors in the image.
+
+        This ensures the selected background color will be easy to remove without affecting
+        the subject, regardless of the subject's colors.
 
         Strategy:
-        1. Analyze image to find dominant colors
-        2. If subject is green, choose a different color (blue, magenta, cyan)
-        3. Select a color that has minimal presence in the image
+        1. Sample all pixels from the image (downsampled for performance)
+        2. Test candidate chromakey colors (green, blue, magenta, cyan, yellow, red)
+        3. For each candidate, calculate the MINIMUM distance to any pixel in the image
+        4. Select the candidate with the MAXIMUM minimum distance (safest color)
+
+        Example:
+        - Image with blue and yellow subject → green chromakey selected (far from both)
+        - Image with green subject → magenta chromakey selected (complementary color)
 
         Args:
             image_bytes: Image bytes
 
         Returns:
-            RGB tuple of recommended background color
+            Tuple of (RGB color, color_name, min_distance_score)
         """
         try:
             image = Image.open(BytesIO(image_bytes))
             if image.mode != 'RGB':
                 image = image.convert('RGB')
 
-            # Analyze subject color
-            analysis = self.analyze_image(image_bytes, detect_subject_color=True)
+            # Downsample for performance (200x200 gives good coverage)
+            img_small = image.resize((200, 200))
+            pixels = np.array(img_small).reshape(-1, 3).astype(np.float32)
 
-            # Candidate background colors (bright, distinct colors)
+            # Candidate chromakey colors (bright, saturated colors for easy removal)
             candidate_colors = {
                 'green': (0, 255, 0),
                 'blue': (0, 0, 255),
@@ -292,36 +301,79 @@ class ImageProcessor:
                 'red': (255, 0, 0),
             }
 
-            # If subject is green, remove green from candidates
-            if analysis.get('is_subject_green', False):
-                logger.info("Subject is green, removing green from candidate background colors")
-                candidate_colors.pop('green', None)
-
-            # Find which color has least presence in the image
-            img_small = image.resize((100, 100))
-            pixels = np.array(img_small).reshape(-1, 3)
-
             best_color = None
-            max_distance = 0  # Track maximum average distance (least presence)
             best_color_name = "green"
+            max_min_distance = 0  # Maximum of minimum distances
 
+            logger.info(f"Analyzing {len(pixels)} pixels to select optimal chromakey color...")
+
+            # For each candidate color, find the minimum distance to ANY pixel in the image
+            results = []
             for color_name, color_rgb in candidate_colors.items():
-                # Calculate average distance from this color
-                target = np.array(color_rgb)
-                distances = np.linalg.norm(pixels - target, axis=1)
-                avg_distance = np.mean(distances)
+                target = np.array(color_rgb, dtype=np.float32)
 
-                # Higher average distance = less presence of this color
-                if avg_distance > max_distance:
-                    max_distance = avg_distance
+                # Calculate Euclidean distance from this candidate to ALL pixels
+                distances = np.linalg.norm(pixels - target, axis=1)
+
+                # Key metrics:
+                # - min_distance: closest any pixel gets to this chromakey color
+                # - avg_distance: average distance (indicates general separation)
+                # - percentile_10: 10th percentile distance (robustness check)
+                min_distance = np.min(distances)
+                avg_distance = np.mean(distances)
+                percentile_10 = np.percentile(distances, 10)
+
+                # Score = weighted combination favoring safe minimum distance
+                # We want a color where even the CLOSEST pixel is far away
+                score = min_distance * 0.5 + percentile_10 * 0.3 + (avg_distance * 0.2)
+
+                results.append({
+                    'name': color_name,
+                    'rgb': color_rgb,
+                    'min_distance': min_distance,
+                    'avg_distance': avg_distance,
+                    'percentile_10': percentile_10,
+                    'score': score
+                })
+
+                logger.info(
+                    f"  {color_name:8s}: min={min_distance:6.1f}, "
+                    f"avg={avg_distance:6.1f}, p10={percentile_10:6.1f}, score={score:6.1f}"
+                )
+
+                # Track best score
+                if score > max_min_distance:
+                    max_min_distance = score
                     best_color = color_rgb
                     best_color_name = color_name
 
-            logger.info(f"Selected background color: {best_color_name} {best_color} (avg distance: {max_distance:.2f})")
+            # Sort results by score
+            results.sort(key=lambda x: x['score'], reverse=True)
 
-            return best_color if best_color else (0, 255, 0)  # Default to green
+            logger.info(f"\n✓ Selected chromakey: {best_color_name.upper()} RGB{best_color}")
+            logger.info(f"  Safety score: {max_min_distance:.1f}")
+            logger.info(f"  Min distance to any pixel: {results[0]['min_distance']:.1f}")
+
+            # If the minimum distance is too low (<50), warn about potential issues
+            if results[0]['min_distance'] < 50:
+                logger.warning(
+                    f"⚠️  Warning: Best chromakey color {best_color_name} is only {results[0]['min_distance']:.1f} units away "
+                    "from subject colors. May require higher tolerance for removal."
+                )
+                logger.warning(f"   Subject may contain colors similar to {best_color_name}.")
+
+            return best_color, best_color_name, results[0]['min_distance']
 
         except Exception as e:
-            logger.error(f"Error selecting background color: {str(e)}")
-            # Default to green
-            return (0, 255, 0)
+            logger.error(f"Error selecting chromakey color: {str(e)}", exc_info=True)
+            # Default to green (classic chromakey)
+            return (0, 255, 0), "green", 0.0
+
+    def select_alternative_background_color(self, image_bytes: bytes) -> Tuple[int, int, int]:
+        """
+        DEPRECATED: Use select_optimal_chromakey_color() instead.
+
+        Kept for backward compatibility.
+        """
+        color, _, _ = self.select_optimal_chromakey_color(image_bytes)
+        return color

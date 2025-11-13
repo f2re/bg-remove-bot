@@ -386,15 +386,20 @@ async def process_image_handler(message: Message):
             file_bytes = await message.bot.download_file(file.file_path)
             image_bytes = file_bytes.read()
 
-            # Analyze and build prompt
+            # Analyze image and select optimal chromakey color
             processor = ImageProcessor()
             analysis = processor.analyze_image(image_bytes)
-            prompt = PromptBuilder.build_prompt(analysis)
+
+            # Select chromakey color with maximum distance from subject colors
+            # For photos (white background), we don't use chromakey - just use white
+            chromakey_color = (255, 255, 255)  # White for photos
+            prompt = PromptBuilder.build_prompt(analysis, background_color=chromakey_color)
 
             # Process image with OpenRouter
             # IMPORTANT: Balance is already reserved at this point
             openrouter = OpenRouterService()
-            result = await openrouter.remove_background(image_bytes, prompt)
+            # For white background, we don't apply chromakey removal (background_color=None)
+            result = await openrouter.remove_background(image_bytes, prompt, background_color=None)
 
             if result['success']:
                 # Send result
@@ -539,14 +544,24 @@ async def process_document_handler(message: Message):
             analysis = processor.analyze_image(image_bytes, detect_subject_color=True)
 
             # Strategy: AI cannot generate transparent backgrounds!
-            # Instead, select a smart background color and use chroma keying
-            background_color = processor.select_alternative_background_color(image_bytes)
-            prompt = PromptBuilder.build_prompt(analysis, background_color=background_color)
+            # Instead, intelligently select chromakey color with MAXIMUM distance from subject colors
+            # This ensures clean removal without affecting the subject
+            chromakey_color, color_name, min_distance = processor.select_optimal_chromakey_color(image_bytes)
+
+            # Update status to show selected color
+            if status_msg:
+                await status_msg.edit_text(
+                    f"⏳ Обрабатываю изображение...\n"
+                    f"🎨 Выбран {color_name} фон для лучшего результата"
+                )
+
+            prompt = PromptBuilder.build_prompt(analysis, background_color=chromakey_color)
 
             # Process image with OpenRouter (AI generates colored bg, then chroma key removes it)
             # IMPORTANT: Balance is already reserved at this point
             openrouter = OpenRouterService()
-            result = await openrouter.remove_background(image_bytes, prompt, background_color=background_color)
+            # Pass chromakey color for automatic removal
+            result = await openrouter.remove_background(image_bytes, prompt, background_color=chromakey_color)
 
             if result['success']:
                 # Send result as document (lossless)

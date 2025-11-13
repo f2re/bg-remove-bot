@@ -25,6 +25,7 @@ from collections import Counter
 
 # Import the chroma key function from openrouter service
 from app.services.openrouter import remove_colored_background, detect_dominant_background_color
+from app.services.image_processor import ImageProcessor
 
 # Setup logging
 logging.basicConfig(
@@ -193,10 +194,48 @@ def plot_color_histogram(image_path: str, output_path: str, title: str = "Color 
         return False
 
 
+def test_chromakey_selection(image_path: str):
+    """
+    Test intelligent chromakey color selection.
+
+    This demonstrates how the bot selects the optimal chromakey color
+    with maximum distance from all colors in the subject image.
+
+    Args:
+        image_path: Path to input image
+    """
+    try:
+        logger.info("=" * 60)
+        logger.info("Testing Intelligent Chromakey Selection")
+        logger.info("=" * 60)
+
+        # Read image
+        with open(image_path, 'rb') as f:
+            image_bytes = f.read()
+
+        # Use the intelligent chromakey selector
+        processor = ImageProcessor()
+        chromakey_color, color_name, min_distance = processor.select_optimal_chromakey_color(image_bytes)
+
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info(f"RESULT: Best chromakey color is {color_name.upper()}")
+        logger.info(f"RGB: {chromakey_color}")
+        logger.info(f"Minimum distance to subject: {min_distance:.1f}")
+        logger.info("=" * 60)
+        logger.info("")
+
+        return chromakey_color, color_name
+
+    except Exception as e:
+        logger.error(f"Error in chromakey selection test: {str(e)}", exc_info=True)
+        return (0, 255, 0), "green"
+
+
 def test_background_removal(
     input_path: str = "test/source.png",
     output_path: str = "test/transparent.png",
-    target_color: tuple = (0, 255, 0),
+    target_color: tuple = None,  # Will be auto-selected if None
     tolerance: int = 50,
     auto_detect: bool = True,
     edge_feather: bool = True
@@ -205,13 +244,14 @@ def test_background_removal(
     Test background removal using chroma keying.
 
     This simulates what OpenRouter would do:
-    1. AI generates image with colored background (we'll use source image as-is)
-    2. Chroma keying is applied to make the background transparent
+    1. Analyze image to select optimal chromakey color (max distance from subject)
+    2. AI generates image with that chromakey background (simulated by using source as-is)
+    3. Chroma keying is applied to make the background transparent
 
     Args:
         input_path: Path to input image
         output_path: Path to save output image
-        target_color: RGB tuple of background color to remove (default: green)
+        target_color: RGB tuple of background color to remove. If None, will be intelligently selected
         tolerance: Color tolerance for chroma keying (0-255)
         auto_detect: If True, automatically detect the background color
         edge_feather: If True, apply edge feathering for smoother transitions
@@ -235,14 +275,34 @@ def test_background_removal(
         logger.info(f"Image mode: {img.mode}")
         logger.info(f"Image format: {img.format}")
 
+        # If no target color specified, intelligently select optimal chromakey color
+        if target_color is None:
+            logger.info("\n" + "=" * 60)
+            logger.info("Step 1: Intelligent Chromakey Selection")
+            logger.info("=" * 60)
+            processor = ImageProcessor()
+            target_color, color_name, min_distance = processor.select_optimal_chromakey_color(image_bytes)
+            logger.info(f"\n✓ Selected: {color_name.upper()} RGB{target_color}")
+            logger.info(f"  Safety distance: {min_distance:.1f}")
+            logger.info("")
+
         # Detect dominant background color if requested
         if auto_detect:
+            logger.info("\n" + "=" * 60)
+            logger.info("Step 2: Detect Actual Background Color")
+            logger.info("=" * 60)
             detected_color = detect_dominant_background_color(image_bytes, requested_color=target_color)
-            logger.info(f"Detected background color: {detected_color}")
+            logger.info(f"✓ Detected background color: {detected_color}")
+            logger.info("")
 
         # Apply chroma keying to remove background
-        logger.info("Applying chroma key background removal...")
-        logger.info(f"Tolerance: {tolerance}, Edge feather: {edge_feather}")
+        logger.info("\n" + "=" * 60)
+        logger.info("Step 3: Apply Chroma Key Background Removal")
+        logger.info("=" * 60)
+        logger.info(f"Target color: {target_color}")
+        logger.info(f"Tolerance: {tolerance}")
+        logger.info(f"Edge feather: {edge_feather}")
+        logger.info("")
         result_bytes = remove_colored_background(
             image_bytes=image_bytes,
             target_color=target_color,
@@ -327,10 +387,19 @@ def main():
     logger.info("Background Removal Test - Auto-detect mode")
     logger.info("=" * 60)
 
+    # First, demonstrate intelligent chromakey selection
+    logger.info("\n🎨 Demonstrating intelligent chromakey color selection...")
+    logger.info("This shows how the bot chooses the best color for background removal.\n")
+
+    chromakey_color, color_name = test_chromakey_selection(str(input_path))
+
+    # Now run the actual background removal test
+    logger.info("\n📸 Running background removal with selected chromakey color...\n")
+
     success = test_background_removal(
         input_path=str(input_path),
         output_path=str(output_path),
-        target_color=(0, 0, 255),  # Blue (will be auto-detected)
+        target_color=None,  # Auto-select optimal chromakey color
         tolerance=40,
         auto_detect=True,
         edge_feather=True  # Enable smooth edge transitions

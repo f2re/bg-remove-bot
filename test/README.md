@@ -12,7 +12,42 @@ This directory contains a standalone test script for background removal using ch
 
 ## Improvements
 
-### 1. Advanced Color Detection (`detect_dominant_background_color`)
+### 1. Intelligent Chromakey Selection (`select_optimal_chromakey_color`)
+
+**Purpose:** Select the optimal chromakey color with MAXIMUM distance from ALL subject colors.
+
+**Why this matters:**
+- Before sending to AI, the bot analyzes the subject image
+- It chooses a chromakey color that won't conflict with the subject
+- AI generates the image with that safe chromakey background
+- Chroma keying cleanly removes it without affecting the subject
+
+**Algorithm:**
+1. Sample all pixels from the image (200x200 downsampled)
+2. Test 6 candidate colors: green, blue, magenta, cyan, yellow, red
+3. For each candidate, calculate distance to EVERY pixel
+4. Find minimum distance (closest any pixel gets to the chromakey)
+5. Select candidate with the MAXIMUM minimum distance
+
+**Scoring:**
+```python
+score = min_distance * 0.5 + percentile_10 * 0.3 + avg_distance * 0.2
+```
+
+**Examples:**
+```
+Image with blue + yellow subject:
+  green   : min=145.2, avg=187.3, p10=156.8, score=163.4 ✓ SELECTED
+  blue    : min=  8.1, avg=125.4, p10= 45.2, score= 42.1
+  magenta : min= 98.5, avg=165.2, p10=118.4, score=120.8
+
+Image with green subject:
+  magenta : min=156.3, avg=201.5, p10=178.2, score=171.9 ✓ SELECTED
+  green   : min= 12.4, avg=145.8, p10= 58.7, score= 52.8
+  cyan    : min=102.1, avg=172.4, p10=135.6, score=125.8
+```
+
+### 2. Advanced Color Detection (`detect_dominant_background_color`)
 
 **Old approach:**
 - Sampled only 4 corners
@@ -38,7 +73,7 @@ Old: Detects RGB(0,0,255) - only 1000 pixels
 New: Clusters all ~3100 pixels, returns avg RGB(1,0,254)
 ```
 
-### 2. Improved Chroma Keying (`remove_colored_background`)
+### 3. Improved Chroma Keying (`remove_colored_background`)
 
 **Old approach:**
 - Checked each RGB channel independently
@@ -112,30 +147,61 @@ The script generates comprehensive histograms showing:
 
 ## How It Works
 
+### Complete Workflow
+
 ```
 1. Load source image
    ↓
-2. Detect background color
+2. SELECT OPTIMAL CHROMAKEY COLOR (NEW!)
+   - Analyze all subject colors (200x200 pixels)
+   - Test 6 candidate chromakey colors
+   - Calculate min distance to ANY subject pixel
+   - Select color with MAXIMUM safety distance
+   - Example: Blue+Yellow subject → Green chromakey
+   ↓
+3. [In production] AI generates image with selected chromakey
+   - Prompt specifies the chosen chromakey color
+   - AI creates image: subject + chromakey background
+   - (In test: we use source image as-is)
+   ↓
+4. Detect actual background color
    - Sample 10px border from all edges
    - Cluster colors with tolerance=30
    - Find largest cluster
    - Calculate average color
    ↓
-3. Apply chroma keying
+5. Apply chroma keying
    - Calculate Euclidean distance for each pixel
    - Full transparency if distance < threshold
    - Partial transparency in feather zone
    ↓
-4. Generate histograms
+6. Generate histograms
    - Source image color distribution
    - Result image color distribution
    ↓
-5. Save results
+7. Save results
 ```
 
 ## Example Results
 
-For an image with blue background:
+### Example 1: Blue Background Image
+
+**Chromakey selection:**
+```
+Analyzing 40,000 pixels to select optimal chromakey color...
+  green   : min=145.2, avg=187.3, p10=156.8, score=163.4
+  blue    : min=  8.1, avg=125.4, p10= 45.2, score= 42.1
+  magenta : min= 98.5, avg=165.2, p10=118.4, score=120.8
+  cyan    : min= 52.3, avg=142.1, p10= 78.4, score= 75.9
+  yellow  : min=132.7, avg=178.9, p10=148.3, score=147.2
+  red     : min=115.4, avg=168.7, p10=135.2, score=128.3
+
+✓ Selected chromakey: GREEN RGB(0, 255, 0)
+  Safety score: 163.4
+  Min distance to any pixel: 145.2
+```
+
+**Background removal:**
 
 ```
 Sampled 12,800 border pixels from 10px border
