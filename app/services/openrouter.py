@@ -11,14 +11,21 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-def detect_dominant_background_color(image_bytes: bytes, requested_color: tuple = None, corner_sample_size: int = 50) -> tuple:
+def detect_dominant_background_color(image_bytes: bytes, requested_color: tuple = None, border_thickness: int = 10, tolerance: int = 30) -> tuple:
     """
-    Detect the actual dominant background color in the image by analyzing corners
+    Detect the actual dominant background color by analyzing image borders and clustering similar colors.
+
+    This improved algorithm:
+    1. Samples pixels from all image borders (not just corners)
+    2. Groups similar colors together using tolerance-based clustering
+    3. Finds the dominant color cluster
+    4. Returns the average color of the dominant cluster
 
     Args:
         image_bytes: Image bytes
         requested_color: The color we requested from AI (for validation)
-        corner_sample_size: Size of corner regions to sample
+        border_thickness: Thickness of border region to sample (in pixels)
+        tolerance: Color similarity tolerance for clustering (0-255)
 
     Returns:
         RGB tuple of the detected dominant background color
@@ -31,68 +38,116 @@ def detect_dominant_background_color(image_bytes: bytes, requested_color: tuple 
         width, height = img.size
         data = np.array(img)
 
-        # Sample all four corners (background is typically in corners)
-        corners = []
-        sample_size = min(corner_sample_size, width // 4, height // 4)
+        # Sample border pixels (all edges)
+        border_thickness = min(border_thickness, width // 10, height // 10)
+        border_pixels = []
 
-        # Top-left
-        corners.append(data[:sample_size, :sample_size, :3])
-        # Top-right
-        corners.append(data[:sample_size, -sample_size:, :3])
-        # Bottom-left
-        corners.append(data[-sample_size:, :sample_size, :3])
-        # Bottom-right
-        corners.append(data[-sample_size:, -sample_size:, :3])
+        # Top border
+        border_pixels.append(data[:border_thickness, :, :3].reshape(-1, 3))
+        # Bottom border
+        border_pixels.append(data[-border_thickness:, :, :3].reshape(-1, 3))
+        # Left border (excluding corners to avoid duplication)
+        border_pixels.append(data[border_thickness:-border_thickness, :border_thickness, :3].reshape(-1, 3))
+        # Right border (excluding corners to avoid duplication)
+        border_pixels.append(data[border_thickness:-border_thickness, -border_thickness:, :3].reshape(-1, 3))
 
-        # Combine all corner pixels
-        corner_pixels = np.concatenate([c.reshape(-1, 3) for c in corners])
+        # Combine all border pixels
+        all_border_pixels = np.concatenate(border_pixels)
 
-        # Count unique colors and find most common
-        from collections import Counter
-        color_counts = Counter(map(tuple, corner_pixels))
+        logger.info(f"Sampled {len(all_border_pixels)} border pixels from {border_thickness}px border")
 
-        if not color_counts:
-            logger.warning("No colors found in corners, using requested color")
+        # Cluster similar colors together using tolerance-based approach
+        # This groups colors like RGB(0,0,255), RGB(1,1,253), RGB(2,0,254) together
+        color_clusters = {}
+
+        for pixel in all_border_pixels:
+            pixel_tuple = tuple(pixel)
+
+            # Check if this pixel belongs to an existing cluster
+            found_cluster = False
+            for cluster_center, cluster_pixels in color_clusters.items():
+                # Calculate color distance
+                distance = np.linalg.norm(np.array(pixel_tuple) - np.array(cluster_center))
+
+                if distance <= tolerance:
+                    # Add to existing cluster
+                    cluster_pixels.append(pixel_tuple)
+                    found_cluster = True
+                    break
+
+            if not found_cluster:
+                # Create new cluster
+                color_clusters[pixel_tuple] = [pixel_tuple]
+
+        logger.info(f"Found {len(color_clusters)} color clusters with tolerance={tolerance}")
+
+        # Find the largest cluster (most pixels)
+        dominant_cluster_center = None
+        dominant_cluster_size = 0
+        dominant_cluster_pixels = []
+
+        for cluster_center, cluster_pixels in color_clusters.items():
+            cluster_size = len(cluster_pixels)
+            if cluster_size > dominant_cluster_size:
+                dominant_cluster_size = cluster_size
+                dominant_cluster_center = cluster_center
+                dominant_cluster_pixels = cluster_pixels
+
+        if not dominant_cluster_pixels:
+            logger.warning("No color clusters found, using requested color")
             return requested_color if requested_color else (0, 255, 0)
 
-        # Get top color
-        dominant_color, count = color_counts.most_common(1)[0]
+        # Calculate average color of the dominant cluster (more accurate than using first pixel)
+        cluster_array = np.array(dominant_cluster_pixels)
+        avg_color = tuple(np.round(np.mean(cluster_array, axis=0)).astype(int))
+
+        cluster_percentage = (dominant_cluster_size / len(all_border_pixels)) * 100
+
+        logger.info(f"Dominant cluster: {dominant_cluster_size} pixels ({cluster_percentage:.1f}% of border)")
+        logger.info(f"Cluster center: {dominant_cluster_center}, Average color: {avg_color}")
 
         # If we have a requested color, validate that dominant color is close to it
         if requested_color:
-            # Calculate color distance
-            distance = np.linalg.norm(np.array(dominant_color) - np.array(requested_color))
+            distance = np.linalg.norm(np.array(avg_color) - np.array(requested_color))
 
-            # If distance is reasonable (within 100), use dominant color
-            # If too far, it might not be the background
             if distance > 150:
-                logger.warning(f"Detected color {dominant_color} is too far from requested {requested_color} (distance: {distance:.1f})")
-                # Try to find a color closer to requested
-                for color, cnt in color_counts.most_common(10):
-                    dist = np.linalg.norm(np.array(color) - np.array(requested_color))
-                    if dist < 150 and cnt > len(corner_pixels) * 0.05:  # At least 5% of corner pixels
-                        dominant_color = color
-                        logger.info(f"Using alternative color {color} (distance: {dist:.1f}, count: {cnt})")
+                logger.warning(f"Detected color {avg_color} is far from requested {requested_color} (distance: {distance:.1f})")
+
+                # Try to find a cluster closer to requested color
+                sorted_clusters = sorted(color_clusters.items(), key=lambda x: len(x[1]), reverse=True)
+
+                for cluster_center, cluster_pixels in sorted_clusters[:5]:  # Check top 5 clusters
+                    cluster_avg = tuple(np.round(np.mean(np.array(cluster_pixels), axis=0)).astype(int))
+                    dist = np.linalg.norm(np.array(cluster_avg) - np.array(requested_color))
+
+                    # Require at least 5% of border pixels
+                    if dist < 150 and len(cluster_pixels) > len(all_border_pixels) * 0.05:
+                        avg_color = cluster_avg
+                        logger.info(f"Using alternative cluster: {cluster_avg} (distance: {dist:.1f}, size: {len(cluster_pixels)})")
                         break
 
-        logger.info(f"Detected dominant background color: {dominant_color} (count: {count}, total corner pixels: {len(corner_pixels)})")
-
-        return dominant_color
+        return avg_color
 
     except Exception as e:
-        logger.error(f"Error detecting dominant color: {str(e)}")
+        logger.error(f"Error detecting dominant color: {str(e)}", exc_info=True)
         return requested_color if requested_color else (0, 255, 0)
 
 
-def remove_colored_background(image_bytes: bytes, target_color: tuple = (0, 255, 0), tolerance: int = 50, auto_detect: bool = True) -> bytes:
+def remove_colored_background(image_bytes: bytes, target_color: tuple = (0, 255, 0), tolerance: int = 50, auto_detect: bool = True, edge_feather: bool = True) -> bytes:
     """
-    Convert colored background to transparency using chroma keying with smart color detection
+    Convert colored background to transparency using chroma keying with smart color detection.
+
+    This improved algorithm:
+    1. Auto-detects the dominant background color using border clustering
+    2. Uses Euclidean distance for better color matching (handles variations)
+    3. Optionally applies edge feathering for smoother transitions
 
     Args:
         image_bytes: Image bytes with colored background
         target_color: RGB tuple of color to remove (default: green)
         tolerance: Color tolerance for detection (0-255, higher = more aggressive)
         auto_detect: If True, automatically detect actual background color instead of using target_color directly
+        edge_feather: If True, apply semi-transparency to edge pixels for smoother results
 
     Returns:
         Image bytes with transparent background
@@ -100,7 +155,13 @@ def remove_colored_background(image_bytes: bytes, target_color: tuple = (0, 255,
     try:
         # Auto-detect the actual background color if requested
         if auto_detect:
-            detected_color = detect_dominant_background_color(image_bytes, requested_color=target_color)
+            # Use tolerance for detection as well
+            detection_tolerance = min(30, tolerance // 2)
+            detected_color = detect_dominant_background_color(
+                image_bytes,
+                requested_color=target_color,
+                tolerance=detection_tolerance
+            )
             logger.info(f"Auto-detected background color {detected_color} (requested was {target_color})")
             actual_target = detected_color
         else:
@@ -112,24 +173,52 @@ def remove_colored_background(image_bytes: bytes, target_color: tuple = (0, 255,
             img = img.convert('RGBA')
 
         # Convert to numpy array for efficient processing
-        data = np.array(img)
+        data = np.array(img).astype(np.float32)
 
         # Define target color
-        target = np.array(actual_target)
+        target = np.array(actual_target, dtype=np.float32)
 
-        # Calculate color distance from target for each pixel
-        # We only check RGB channels (first 3 channels)
-        diff = np.abs(data[:, :, :3] - target)
+        # Calculate Euclidean distance from target color for each pixel
+        # This better handles color variations than checking each channel separately
+        color_distances = np.linalg.norm(data[:, :, :3] - target, axis=2)
 
-        # Create mask: pixels are considered matching if all RGB channels are within tolerance
-        is_target_color = (
-            (diff[:, :, 0] < tolerance) &
-            (diff[:, :, 1] < tolerance) &
-            (diff[:, :, 2] < tolerance)
-        )
+        # Create mask based on distance threshold
+        # Convert tolerance (per-channel) to Euclidean distance
+        # For RGB, max distance when all channels differ by tolerance is: sqrt(3 * tolerance^2)
+        distance_threshold = np.sqrt(3) * tolerance
 
-        # Set alpha channel to 0 (fully transparent) for matching pixels
-        data[is_target_color, 3] = 0
+        # Full transparency for pixels within tolerance
+        is_background = color_distances <= distance_threshold
+
+        # Set alpha to 0 for background pixels
+        data[is_background, 3] = 0
+
+        # Optional: Edge feathering for smoother transitions
+        if edge_feather:
+            # Create a feather zone for pixels just outside the threshold
+            feather_range = tolerance * 0.5
+            feather_distance_threshold = distance_threshold + feather_range
+
+            is_feather_zone = (color_distances > distance_threshold) & (color_distances <= feather_distance_threshold)
+
+            # Calculate alpha based on distance (linear falloff)
+            # Pixels at distance_threshold get alpha=255, at feather_distance_threshold get alpha=255
+            # This creates a smooth transition
+            if np.any(is_feather_zone):
+                feather_pixels_distances = color_distances[is_feather_zone]
+                # Normalize to 0-1 range
+                normalized_distances = (feather_pixels_distances - distance_threshold) / feather_range
+                # Calculate alpha (0 at threshold, 255 at feather edge)
+                feather_alpha = (normalized_distances * 255).astype(np.uint8)
+
+                # Apply feathered alpha, but don't make pixels MORE opaque
+                current_alpha = data[is_feather_zone, 3].astype(np.uint8)
+                data[is_feather_zone, 3] = np.minimum(current_alpha, feather_alpha)
+
+                logger.info(f"Applied edge feathering to {np.sum(is_feather_zone)} pixels")
+
+        # Convert back to uint8
+        data = data.astype(np.uint8)
 
         # Convert back to PIL Image
         result = Image.fromarray(data, 'RGBA')
@@ -139,12 +228,17 @@ def remove_colored_background(image_bytes: bytes, target_color: tuple = (0, 255,
         result.save(output, format='PNG')
         output.seek(0)
 
-        logger.info(f"Chroma key removal completed for color {actual_target}. Processed {np.sum(is_target_color)} pixels to transparent")
+        transparent_pixels = np.sum(is_background)
+        total_pixels = data.shape[0] * data.shape[1]
+        transparency_percent = (transparent_pixels / total_pixels) * 100
+
+        logger.info(f"Chroma key removal completed for color {actual_target} with tolerance={tolerance}")
+        logger.info(f"Removed {transparent_pixels:,} pixels ({transparency_percent:.1f}% of image)")
 
         return output.getvalue()
 
     except Exception as e:
-        logger.error(f"Error in remove_colored_background: {str(e)}")
+        logger.error(f"Error in remove_colored_background: {str(e)}", exc_info=True)
         # Return original image if processing fails
         return image_bytes
 
