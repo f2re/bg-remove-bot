@@ -88,6 +88,89 @@ async def decrease_balance(session: AsyncSession, telegram_id: int) -> bool:
     return False
 
 
+async def check_and_reserve_balance(session: AsyncSession, telegram_id: int) -> tuple[bool, bool]:
+    """
+    Atomically check and reserve balance for image processing with row-level locking
+    This prevents race conditions when multiple requests come in simultaneously
+
+    Args:
+        session: Database session
+        telegram_id: Telegram user ID
+
+    Returns:
+        tuple: (success: bool, is_free: bool)
+            success: Whether balance was successfully reserved
+            is_free: Whether a free image was used
+    """
+    # Use FOR UPDATE to lock the row and prevent concurrent modifications
+    result = await session.execute(
+        select(User).where(User.telegram_id == telegram_id).with_for_update()
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        return False, False
+
+    # Try to use free image first
+    if user.free_images_left > 0:
+        user.free_images_left -= 1
+        await session.commit()
+        return True, True
+
+    # Check if user has paid images available
+    # Count paid images from successful orders
+    paid_result = await session.execute(
+        select(func.sum(Package.images_count))
+        .join(Order, Order.package_id == Package.id)
+        .where(and_(Order.user_id == user.id, Order.status == "paid"))
+    )
+    paid_total = paid_result.scalar() or 0
+
+    # Count used paid images
+    used_result = await session.execute(
+        select(func.count(ProcessedImage.id))
+        .where(and_(ProcessedImage.user_id == user.id, ProcessedImage.is_free == False))
+    )
+    used_paid = used_result.scalar() or 0
+
+    paid_left = paid_total - used_paid
+
+    if paid_left > 0:
+        # User has paid images, don't decrease anything here
+        # The ProcessedImage record will be created later to track usage
+        await session.commit()  # Release the lock
+        return True, False
+
+    # No balance available
+    await session.commit()  # Release the lock
+    return False, False
+
+
+async def rollback_balance(session: AsyncSession, telegram_id: int, is_free: bool):
+    """
+    Rollback balance reservation if processing failed
+
+    Args:
+        session: Database session
+        telegram_id: Telegram user ID
+        is_free: Whether a free image was reserved
+    """
+    if not is_free:
+        # For paid images, we don't decrease anything upfront
+        # So nothing to rollback
+        return
+
+    # Rollback free image
+    result = await session.execute(
+        select(User).where(User.telegram_id == telegram_id).with_for_update()
+    )
+    user = result.scalar_one_or_none()
+
+    if user:
+        user.free_images_left += 1
+        await session.commit()
+
+
 async def add_paid_images(session: AsyncSession, telegram_id: int, count: int):
     """This is tracked through orders, no direct operation needed"""
     pass

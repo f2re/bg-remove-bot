@@ -6,8 +6,10 @@ from aiogram.fsm.context import FSMContext
 from app.database import get_db
 from app.database.crud import (
     get_or_create_user, get_user_balance, decrease_balance,
-    update_user_stats, save_processed_image, get_all_packages
+    update_user_stats, save_processed_image, get_all_packages,
+    check_and_reserve_balance, rollback_balance
 )
+from app.utils.locks import user_processing_lock
 from app.keyboards.user_kb import (
     get_main_menu, get_packages_keyboard, get_info_menu, get_back_keyboard,
     get_support_contact_keyboard, get_buy_package_keyboard, get_low_balance_keyboard
@@ -345,23 +347,39 @@ async def check_balance_handler(callback: CallbackQuery):
 @error_handler
 async def process_image_handler(message: Message):
     """Handle image processing"""
-    # Check balance
+    # Check if user is already processing an image
+    if user_processing_lock.is_processing(message.from_user.id):
+        await message.answer(
+            "⏳ Пожалуйста, дождитесь завершения обработки предыдущего изображения.\n\n"
+            "Я обрабатываю только одно изображение за раз для обеспечения качества."
+        )
+        return
+
     db = get_db()
-    async with db.get_session() as session:
-        balance = await get_user_balance(session, message.from_user.id)
+    status_msg = None
+    balance_reserved = False
+    is_free_image = False
 
-        if balance['total'] <= 0:
-            await message.answer(
-                "❌ У вас закончились изображения!\n\n"
-                "💎 Купите пакет для продолжения работы.",
-                reply_markup=get_buy_package_keyboard()
-            )
-            return
+    try:
+        # Acquire processing lock for this user
+        async with user_processing_lock.acquire(message.from_user.id):
+            # Check and reserve balance atomically with row-level locking
+            async with db.get_session() as session:
+                success, is_free_image = await check_and_reserve_balance(session, message.from_user.id)
 
-        # Show processing message
-        status_msg = await message.answer("⏳ Обрабатываю изображение...")
+                if not success:
+                    await message.answer(
+                        "❌ У вас закончились изображения!\n\n"
+                        "💎 Купите пакет для продолжения работы.",
+                        reply_markup=get_buy_package_keyboard()
+                    )
+                    return
 
-        try:
+                balance_reserved = True
+
+            # Show processing message
+            status_msg = await message.answer("⏳ Обрабатываю изображение...")
+
             # Download photo
             photo = message.photo[-1]
             file = await message.bot.get_file(photo.file_id)
@@ -374,6 +392,7 @@ async def process_image_handler(message: Message):
             prompt = PromptBuilder.build_prompt(analysis)
 
             # Process image with OpenRouter
+            # IMPORTANT: Balance is already reserved at this point
             openrouter = OpenRouterService()
             result = await openrouter.remove_background(image_bytes, prompt)
 
@@ -386,27 +405,23 @@ async def process_image_handler(message: Message):
                     filename="removed_bg.png"
                 )
 
-                # Determine if using free or paid image
-                is_free = balance['free'] > 0
+                # Save processing record to database
+                async with db.get_session() as session:
+                    # Update stats
+                    await update_user_stats(session, message.from_user.id)
 
-                # Decrease balance
-                await decrease_balance(session, message.from_user.id)
+                    # Save to database
+                    await save_processed_image(
+                        session,
+                        message.from_user.id,
+                        photo.file_id,
+                        "processed_file_id",  # Would be the actual file_id after upload
+                        prompt,
+                        is_free_image
+                    )
 
-                # Update stats
-                await update_user_stats(session, message.from_user.id)
-
-                # Save to database
-                await save_processed_image(
-                    session,
-                    message.from_user.id,
-                    photo.file_id,
-                    "processed_file_id",  # Would be the actual file_id after upload
-                    prompt,
-                    is_free
-                )
-
-                # Get new balance
-                new_balance = await get_user_balance(session, message.from_user.id)
+                    # Get new balance
+                    new_balance = await get_user_balance(session, message.from_user.id)
 
                 caption = f"✅ Готово! Фон успешно удален (на белом фоне).\n\n📊 Осталось изображений: {new_balance['total']}\n\n💡 Для PNG с прозрачным фоном отправьте изображение как документ (📎)"
 
@@ -432,21 +447,44 @@ async def process_image_handler(message: Message):
                 else:
                     await message.answer_photo(output_file, caption=caption)
 
-                await status_msg.delete()
+                if status_msg:
+                    await status_msg.delete()
             else:
-                await status_msg.edit_text(
-                    f"❌ Ошибка обработки: {result['error']}\n\n"
-                    "Попробуйте другое фото или обратитесь в поддержку.",
-                    reply_markup=get_support_contact_keyboard()
-                )
+                # OpenRouter failed - rollback balance
+                if balance_reserved:
+                    async with db.get_session() as session:
+                        await rollback_balance(session, message.from_user.id, is_free_image)
 
-        except Exception as e:
+                if status_msg:
+                    await status_msg.edit_text(
+                        f"❌ Ошибка обработки: {result['error']}\n\n"
+                        "Попробуйте другое фото или обратитесь в поддержку.",
+                        reply_markup=get_support_contact_keyboard()
+                    )
+
+    except RuntimeError as e:
+        # User tried to send multiple images at once
+        if "Already processing" in str(e):
+            await message.answer(
+                "⏳ Пожалуйста, дождитесь завершения обработки предыдущего изображения.\n\n"
+                "Я обрабатываю только одно изображение за раз."
+            )
+        else:
+            raise
+
+    except Exception as e:
+        # Rollback balance if something went wrong
+        if balance_reserved:
+            async with db.get_session() as session:
+                await rollback_balance(session, message.from_user.id, is_free_image)
+
+        if status_msg:
             await status_msg.edit_text(
                 "❌ Произошла ошибка при обработке изображения.\n\n"
                 "Попробуйте еще раз или обратитесь в поддержку.",
                 reply_markup=get_support_contact_keyboard()
             )
-            print(f"Error processing image: {str(e)}")
+        print(f"Error processing image: {str(e)}")
 
 
 @router.message(F.document)
@@ -458,23 +496,39 @@ async def process_document_handler(message: Message):
         await message.answer("⚠️ Пожалуйста, отправьте файл изображения (PNG, JPG и т.д.)")
         return
 
-    # Check balance
+    # Check if user is already processing an image
+    if user_processing_lock.is_processing(message.from_user.id):
+        await message.answer(
+            "⏳ Пожалуйста, дождитесь завершения обработки предыдущего изображения.\n\n"
+            "Я обрабатываю только одно изображение за раз для обеспечения качества."
+        )
+        return
+
     db = get_db()
-    async with db.get_session() as session:
-        balance = await get_user_balance(session, message.from_user.id)
+    status_msg = None
+    balance_reserved = False
+    is_free_image = False
 
-        if balance['total'] <= 0:
-            await message.answer(
-                "❌ У вас закончились изображения!\n\n"
-                "💎 Купите пакет для продолжения работы.",
-                reply_markup=get_buy_package_keyboard()
-            )
-            return
+    try:
+        # Acquire processing lock for this user
+        async with user_processing_lock.acquire(message.from_user.id):
+            # Check and reserve balance atomically with row-level locking
+            async with db.get_session() as session:
+                success, is_free_image = await check_and_reserve_balance(session, message.from_user.id)
 
-        # Show processing message
-        status_msg = await message.answer("⏳ Обрабатываю изображение без потери качества...")
+                if not success:
+                    await message.answer(
+                        "❌ У вас закончились изображения!\n\n"
+                        "💎 Купите пакет для продолжения работы.",
+                        reply_markup=get_buy_package_keyboard()
+                    )
+                    return
 
-        try:
+                balance_reserved = True
+
+            # Show processing message
+            status_msg = await message.answer("⏳ Обрабатываю изображение без потери качества...")
+
             # Download document
             file = await message.bot.get_file(message.document.file_id)
             file_bytes = await message.bot.download_file(file.file_path)
@@ -485,16 +539,12 @@ async def process_document_handler(message: Message):
             analysis = processor.analyze_image(image_bytes, detect_subject_color=True)
 
             # Strategy: Try transparent background first (most reliable)
-            # If AI doesn't support it well, we have chroma key as fallback
             prompt = PromptBuilder.build_prompt(analysis, transparent=True)
 
             # Process image with OpenRouter (requesting transparent background)
+            # IMPORTANT: Balance is already reserved at this point
             openrouter = OpenRouterService()
             result = await openrouter.remove_background(image_bytes, prompt, transparent=True)
-
-            # Fallback: If transparent didn't work well, try chroma key approach
-            # (This can be detected by checking if result has transparency)
-            # For now, we trust the transparent approach
 
             if result['success']:
                 # Send result as document (lossless)
@@ -505,27 +555,23 @@ async def process_document_handler(message: Message):
                     filename=f"nobg_{message.from_user.id}_{message.document.file_unique_id}.png"
                 )
 
-                # Determine if using free or paid image
-                is_free = balance['free'] > 0
+                # Save processing record to database
+                async with db.get_session() as session:
+                    # Update stats
+                    await update_user_stats(session, message.from_user.id)
 
-                # Decrease balance
-                await decrease_balance(session, message.from_user.id)
+                    # Save to database
+                    await save_processed_image(
+                        session,
+                        message.from_user.id,
+                        message.document.file_id,
+                        "processed_file_id",  # Would be the actual file_id after upload
+                        prompt,
+                        is_free_image
+                    )
 
-                # Update stats
-                await update_user_stats(session, message.from_user.id)
-
-                # Save to database
-                await save_processed_image(
-                    session,
-                    message.from_user.id,
-                    message.document.file_id,
-                    "processed_file_id",  # Would be the actual file_id after upload
-                    prompt,
-                    is_free
-                )
-
-                # Get new balance
-                new_balance = await get_user_balance(session, message.from_user.id)
+                    # Get new balance
+                    new_balance = await get_user_balance(session, message.from_user.id)
 
                 caption = f"✅ Готово! Фон успешно удален (PNG с прозрачным фоном).\n\n📊 Осталось изображений: {new_balance['total']}\n\n✨ Высокое качество без потери деталей!"
 
@@ -551,21 +597,44 @@ async def process_document_handler(message: Message):
                 else:
                     await message.answer_document(output_file, caption=caption)
 
-                await status_msg.delete()
+                if status_msg:
+                    await status_msg.delete()
             else:
-                await status_msg.edit_text(
-                    f"❌ Ошибка обработки: {result['error']}\n\n"
-                    "Попробуйте другое фото или обратитесь в поддержку.",
-                    reply_markup=get_support_contact_keyboard()
-                )
+                # OpenRouter failed - rollback balance
+                if balance_reserved:
+                    async with db.get_session() as session:
+                        await rollback_balance(session, message.from_user.id, is_free_image)
 
-        except Exception as e:
+                if status_msg:
+                    await status_msg.edit_text(
+                        f"❌ Ошибка обработки: {result['error']}\n\n"
+                        "Попробуйте другое фото или обратитесь в поддержку.",
+                        reply_markup=get_support_contact_keyboard()
+                    )
+
+    except RuntimeError as e:
+        # User tried to send multiple images at once
+        if "Already processing" in str(e):
+            await message.answer(
+                "⏳ Пожалуйста, дождитесь завершения обработки предыдущего изображения.\n\n"
+                "Я обрабатываю только одно изображение за раз."
+            )
+        else:
+            raise
+
+    except Exception as e:
+        # Rollback balance if something went wrong
+        if balance_reserved:
+            async with db.get_session() as session:
+                await rollback_balance(session, message.from_user.id, is_free_image)
+
+        if status_msg:
             await status_msg.edit_text(
                 "❌ Произошла ошибка при обработке изображения.\n\n"
                 "Попробуйте еще раз или обратитесь в поддержку.",
                 reply_markup=get_support_contact_keyboard()
             )
-            print(f"Error processing document: {str(e)}")
+        print(f"Error processing document: {str(e)}")
 
 
 @router.message(F.text == "📸 Обработать изображение")
