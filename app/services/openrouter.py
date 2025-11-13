@@ -175,15 +175,16 @@ class OpenRouterService:
         self.model = settings.OPENROUTER_MODEL or "google/gemini-2.5-flash-image-preview"
         self.base_url = "https://openrouter.ai/api/v1/chat/completions"
 
-    async def remove_background(self, image_bytes: bytes, prompt: str, background_color: tuple = None, transparent: bool = False) -> Dict:
+    async def remove_background(self, image_bytes: bytes, prompt: str, background_color: tuple = None) -> Dict:
         """
         Remove background from image using OpenRouter API with image editing model
 
         Args:
             image_bytes: Image bytes
             prompt: Prompt for background removal (должен быть специфичным)
-            background_color: RGB tuple for background color (for white/colored backgrounds)
-            transparent: If True, request transparent background (no chroma keying)
+            background_color: RGB tuple for background color. AI will generate this color,
+                            then chroma keying will be applied to make it transparent.
+                            If None, result will have the AI-generated background (typically white).
 
         Returns:
             dict with keys: success (bool), image_bytes (bytes), error (str)
@@ -311,12 +312,9 @@ class OpenRouterService:
 
                                 logger.info("Successfully extracted processed image from API response")
 
-                                # Apply chroma key only if not requesting transparent directly
-                                if transparent:
-                                    # AI should have generated transparent background directly
-                                    logger.info("Using AI-generated transparent background directly (no chroma keying)")
-                                    final_image_bytes = processed_image_bytes
-                                elif background_color:
+                                # AI cannot generate transparent backgrounds directly!
+                                # Always apply chroma keying when background_color is specified
+                                if background_color:
                                     # Apply chroma key to convert colored background to transparency
                                     logger.info(f"Applying chroma key to remove {background_color} background")
                                     final_image_bytes = remove_colored_background(processed_image_bytes, target_color=background_color)
@@ -342,11 +340,8 @@ class OpenRouterService:
                                     processed_image_bytes = base64.b64decode(base64_part)
                                     Image.open(BytesIO(processed_image_bytes))  # Validate
 
-                                    # Apply chroma key only if not requesting transparent directly
-                                    if transparent:
-                                        logger.info("Using AI-generated transparent background directly (fallback path)")
-                                        final_image_bytes = processed_image_bytes
-                                    elif background_color:
+                                    # AI cannot generate transparent backgrounds - always use chroma keying
+                                    if background_color:
                                         logger.info(f"Applying chroma key to remove {background_color} background (fallback path)")
                                         final_image_bytes = remove_colored_background(processed_image_bytes, target_color=background_color)
                                     else:

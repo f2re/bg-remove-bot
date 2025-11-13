@@ -5,22 +5,22 @@ class PromptBuilder:
     """Service for building optimized prompts for background removal"""
 
     @staticmethod
-    def build_prompt(image_analysis: Dict, background_color: Tuple[int, int, int] = None, transparent: bool = False) -> str:
+    def build_prompt(image_analysis: Dict, background_color: Tuple[int, int, int] = None) -> str:
         """
         Build optimal prompt based on image analysis for background removal
+
+        IMPORTANT: AI cannot generate transparent backgrounds directly!
+        This method always requests a colored background. Use chroma keying
+        to convert the colored background to transparent.
 
         Args:
             image_analysis: Dictionary with image analysis results
             background_color: RGB tuple for background color (default: white 255,255,255)
-            transparent: If True, request transparent background instead of colored
+                            The AI will generate this color, then chroma keying removes it.
 
         Returns:
             Optimized prompt for background removal
         """
-        # Handle transparent background request
-        if transparent:
-            return PromptBuilder.build_transparent_prompt(image_analysis)
-
         # Default to white if no color specified
         if background_color is None:
             background_color = (255, 255, 255)
@@ -86,13 +86,16 @@ class PromptBuilder:
     @staticmethod
     def build_transparent_prompt(image_analysis: Dict) -> str:
         """
-        Build prompt specifically for transparent background (PNG with alpha channel)
+        DEPRECATED: AI cannot generate transparent backgrounds directly!
+
+        This method is kept for backward compatibility but should NOT be used.
+        Use build_prompt() with a colored background_color, then apply chroma keying.
 
         Args:
             image_analysis: Dictionary with image analysis results
 
         Returns:
-            Optimized prompt for transparent background removal
+            Optimized prompt for transparent background removal (DOES NOT WORK!)
         """
         # Base instruction for transparent background
         base_prompt = (
