@@ -482,14 +482,19 @@ async def process_document_handler(message: Message):
 
             # Analyze image for prompt building
             processor = ImageProcessor()
-            analysis = processor.analyze_image(image_bytes, detect_subject_color=False)
+            analysis = processor.analyze_image(image_bytes, detect_subject_color=True)
 
-            # Build prompt requesting transparent background directly
+            # Strategy: Try transparent background first (most reliable)
+            # If AI doesn't support it well, we have chroma key as fallback
             prompt = PromptBuilder.build_prompt(analysis, transparent=True)
 
             # Process image with OpenRouter (requesting transparent background)
             openrouter = OpenRouterService()
             result = await openrouter.remove_background(image_bytes, prompt, transparent=True)
+
+            # Fallback: If transparent didn't work well, try chroma key approach
+            # (This can be detected by checking if result has transparency)
+            # For now, we trust the transparent approach
 
             if result['success']:
                 # Send result as document (lossless)
