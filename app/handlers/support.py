@@ -72,14 +72,25 @@ async def cancel_support_handler(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.message(SupportStates.waiting_for_message)
+@router.message(SupportStates.waiting_for_message, F.document)
+async def support_document_rejected(message: Message, state: FSMContext):
+    """Inform user that documents are not supported in support messages"""
+    await message.answer(
+        "⚠️ Прикрепление файлов в обращениях пока не поддерживается.\n\n"
+        "Пожалуйста, опишите вашу проблему текстом.\n"
+        "Если нужно отправить изображение на обработку, отмените создание обращения.",
+        reply_markup=get_cancel_keyboard()
+    )
+
+
+@router.message(SupportStates.waiting_for_message, F.text)
 async def process_support_message(message: Message, state: FSMContext):
     """Process support message"""
     data = await state.get_data()
     support_type = data.get('support_type', 'general')
 
     # Validate message
-    if not message.text or len(message.text) < 10:
+    if len(message.text) < 10:
         await message.answer(
             "❌ Сообщение слишком короткое.\n\n"
             "Пожалуйста, опишите вашу проблему подробнее (минимум 10 символов)."

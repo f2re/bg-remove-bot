@@ -310,6 +310,8 @@ async def show_packages_handler(callback: CallbackQuery):
 @router.callback_query(F.data == "check_balance")
 async def check_balance_handler(callback: CallbackQuery):
     """Handle check balance button"""
+    from aiogram.exceptions import TelegramBadRequest
+
     db = get_db()
     async with db.get_session() as session:
         balance = await get_user_balance(session, callback.from_user.id)
@@ -322,14 +324,19 @@ async def check_balance_handler(callback: CallbackQuery):
         f"📸 Всего доступно: {balance['total']}"
     )
 
-    if balance['total'] == 0:
-        text += "\n\n💰 У вас закончились изображения. Купите пакет для продолжения работы!"
-        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_buy_package_keyboard())
-    elif balance['total'] <= 3:
-        text += "\n\n💡 Рекомендуем пополнить баланс заранее!"
-        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_low_balance_keyboard())
-    else:
-        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_back_keyboard())
+    try:
+        if balance['total'] == 0:
+            text += "\n\n💰 У вас закончились изображения. Купите пакет для продолжения работы!"
+            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_buy_package_keyboard())
+        elif balance['total'] <= 3:
+            text += "\n\n💡 Рекомендуем пополнить баланс заранее!"
+            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_low_balance_keyboard())
+        else:
+            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_back_keyboard())
+    except TelegramBadRequest as e:
+        # Message content is identical, just answer the callback
+        if "message is not modified" not in str(e):
+            raise
 
     await callback.answer()
 
