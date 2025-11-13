@@ -480,21 +480,16 @@ async def process_document_handler(message: Message):
             file_bytes = await message.bot.download_file(file.file_path)
             image_bytes = file_bytes.read()
 
-            # Analyze image and select optimal background color
-            processor = ImageProcessor()
-
-            # Select background color based on subject analysis
-            background_color = processor.select_alternative_background_color(image_bytes)
-
             # Analyze image for prompt building
-            analysis = processor.analyze_image(image_bytes, detect_subject_color=True)
+            processor = ImageProcessor()
+            analysis = processor.analyze_image(image_bytes, detect_subject_color=False)
 
-            # Build prompt with selected background color
-            prompt = PromptBuilder.build_prompt(analysis, background_color=background_color)
+            # Build prompt requesting transparent background directly
+            prompt = PromptBuilder.build_prompt(analysis, transparent=True)
 
-            # Process image with OpenRouter
+            # Process image with OpenRouter (requesting transparent background)
             openrouter = OpenRouterService()
-            result = await openrouter.remove_background(image_bytes, prompt, background_color=background_color)
+            result = await openrouter.remove_background(image_bytes, prompt, transparent=True)
 
             if result['success']:
                 # Send result as document (lossless)
