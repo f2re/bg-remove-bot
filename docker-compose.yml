@@ -18,7 +18,7 @@ services:
     depends_on:
       - redis
     environment:
-      DATABASE_URL: postgresql+asyncpg://bgremove_user:BgRemove-2000@timecapsule_postgres:5432/bg_removal_bot
+      DATABASE_URL: ${DATABASE_URL}
     env_file:
       - .env
     networks:
