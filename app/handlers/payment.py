@@ -16,12 +16,13 @@ router = Router()
 
 
 class PaymentStates(StatesGroup):
+    waiting_for_email = State()
     waiting_for_payment = State()
 
 
 @router.callback_query(F.data.startswith("buy_package:"))
 async def buy_package_handler(callback: CallbackQuery, state: FSMContext):
-    """Handle package purchase request"""
+    """Handle package purchase request - ask for email first"""
     package_id = int(callback.data.split(":")[1])
 
     db = get_db()
@@ -32,28 +33,90 @@ async def buy_package_handler(callback: CallbackQuery, state: FSMContext):
             await callback.answer("❌ Пакет не найден", show_alert=True)
             return
 
+        # Save package info to state
+        await state.update_data(
+            package_id=package.id,
+            package_name=package.name,
+            images_count=package.images_count,
+            price_rub=float(package.price_rub)
+        )
+        await state.set_state(PaymentStates.waiting_for_email)
+
+        # Ask for email
+        text = (
+            f"💎 <b>Покупка пакета: {package.name}</b>\n\n"
+            f"📦 Изображений: {package.images_count}\n"
+            f"💰 Стоимость: {package.price_rub}₽\n\n"
+            "📧 <b>Для формирования чека необходим ваш email</b>\n\n"
+            "Пожалуйста, отправьте ваш email адрес для получения чека.\n"
+            "Например: example@mail.ru\n\n"
+            "Или нажмите /cancel для отмены покупки."
+        )
+
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML"
+        )
+
+    await callback.answer()
+
+
+@router.message(PaymentStates.waiting_for_email)
+async def process_email_and_create_payment(message: Message, state: FSMContext):
+    """Process user email and create payment"""
+    import re
+
+    # Check if user wants to cancel
+    if message.text and message.text.startswith('/cancel'):
+        await state.clear()
+        await message.answer(
+            "❌ Покупка отменена.\n\n"
+            "Вы можете выбрать другой пакет или вернуться в главное меню.",
+            reply_markup=get_back_keyboard()
+        )
+        return
+
+    # Validate email format
+    user_email = message.text.strip()
+    email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+
+    if not re.match(email_pattern, user_email):
+        await message.answer(
+            "❌ <b>Неверный формат email</b>\n\n"
+            "Пожалуйста, отправьте корректный email адрес.\n"
+            "Например: example@mail.ru\n\n"
+            "Или нажмите /cancel для отмены покупки.",
+            parse_mode="HTML"
+        )
+        return
+
+    # Get package data from state
+    data = await state.get_data()
+
+    db = get_db()
+    async with db.get_session() as session:
         # Generate unique order ID for YooKassa metadata
         import time
-        order_id_str = f"order_{callback.from_user.id}_{int(time.time())}"
+        order_id_str = f"order_{message.from_user.id}_{int(time.time())}"
 
         # Create order in database (temporarily without payment_id)
         order = await create_order(
             session,
-            telegram_id=callback.from_user.id,
-            package_id=package.id,
+            telegram_id=message.from_user.id,
+            package_id=data['package_id'],
             invoice_id=order_id_str,
-            amount=float(package.price_rub)
+            amount=data['price_rub']
         )
 
         try:
-            # Create payment via YooKassa
+            # Create payment via YooKassa with email for receipt
             yookassa = YookassaService()
             payment_info = yookassa.create_payment(
-                amount=float(package.price_rub),
-                description=f"Покупка пакета: {package.name}",
+                amount=data['price_rub'],
+                description=f"Покупка пакета: {data['package_name']}",
                 order_id=order_id_str,
-                user_email=None,  # Can add user email if available
-                user_phone=None   # Can add user phone if available
+                user_email=user_email,
+                user_phone=None
             )
 
             # Update order with YooKassa payment_id
@@ -65,21 +128,22 @@ async def buy_package_handler(callback: CallbackQuery, state: FSMContext):
             # Save payment data to state
             await state.update_data(
                 order_id=order.id,
-                package_id=package.id,
-                amount=float(package.price_rub),
-                payment_id=payment_info["payment_id"]
+                payment_id=payment_info["payment_id"],
+                user_email=user_email
             )
             await state.set_state(PaymentStates.waiting_for_payment)
 
             text = (
-                f"💎 <b>Покупка пакета: {package.name}</b>\n\n"
-                f"📦 Изображений: {package.images_count}\n"
-                f"💰 Стоимость: {package.price_rub}₽\n\n"
+                f"✅ <b>Email принят: {user_email}</b>\n\n"
+                f"💎 <b>Покупка пакета: {data['package_name']}</b>\n\n"
+                f"📦 Изображений: {data['images_count']}\n"
+                f"💰 Стоимость: {data['price_rub']}₽\n\n"
                 "Нажмите кнопку ниже для перехода к оплате.\n\n"
-                "После успешной оплаты изображения будут автоматически начислены на ваш баланс."
+                "После успешной оплаты изображения будут автоматически начислены на ваш баланс, "
+                "а чек отправлен на указанный email."
             )
 
-            await callback.message.edit_text(
+            await message.answer(
                 text,
                 parse_mode="HTML",
                 reply_markup=get_payment_confirmation(payment_url)
@@ -91,6 +155,10 @@ async def buy_package_handler(callback: CallbackQuery, state: FSMContext):
             await session.commit()
 
             # Show user-friendly error message
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Payment creation error: {str(e)}")
+
             error_text = (
                 "❌ <b>Ошибка при создании платежа</b>\n\n"
                 "К сожалению, не удалось создать платёж. "
@@ -98,13 +166,12 @@ async def buy_package_handler(callback: CallbackQuery, state: FSMContext):
                 f"Код ошибки: {type(e).__name__}"
             )
 
-            await callback.message.edit_text(
+            await message.answer(
                 error_text,
                 parse_mode="HTML",
                 reply_markup=get_back_keyboard()
             )
-
-    await callback.answer()
+            await state.clear()
 
 
 @router.callback_query(F.data == "cancel_payment")
