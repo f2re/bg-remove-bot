@@ -6,6 +6,7 @@ import logging
 
 from yookassa import Configuration, Payment
 from yookassa.domain.notification import WebhookNotification
+from requests.exceptions import HTTPError
 
 from app.config import settings
 
@@ -22,6 +23,14 @@ class YookassaService:
             secret_key=settings.YOOKASSA_SECRET_KEY
         )
         self.return_url = settings.YOOKASSA_RETURN_URL
+
+        # Validate configuration
+        if "your_bot" in self.return_url:
+            logger.warning(
+                "YOOKASSA_RETURN_URL appears to be using default placeholder value. "
+                "Please set a proper return URL in your .env file. "
+                "For Telegram bots, you can use your bot's link (e.g., https://t.me/your_actual_bot_username)"
+            )
 
     def create_payment(
         self,
@@ -85,6 +94,16 @@ class YookassaService:
                 "amount": float(payment.amount.value)
             }
 
+        except HTTPError as e:
+            # Log detailed error response from YooKassa
+            error_detail = "No response body"
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_detail = e.response.text
+                except:
+                    error_detail = str(e.response.content)
+            logger.error(f"Failed to create payment (HTTP {e.response.status_code if hasattr(e, 'response') else 'unknown'}): {error_detail}")
+            raise
         except Exception as e:
             logger.error(f"Failed to create payment: {str(e)}")
             raise

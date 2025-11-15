@@ -45,44 +45,64 @@ async def buy_package_handler(callback: CallbackQuery, state: FSMContext):
             amount=float(package.price_rub)
         )
 
-        # Create payment via YooKassa
-        yookassa = YookassaService()
-        payment_info = yookassa.create_payment(
-            amount=float(package.price_rub),
-            description=f"Покупка пакета: {package.name}",
-            order_id=order_id_str,
-            user_email=None,  # Can add user email if available
-            user_phone=None   # Can add user phone if available
-        )
+        try:
+            # Create payment via YooKassa
+            yookassa = YookassaService()
+            payment_info = yookassa.create_payment(
+                amount=float(package.price_rub),
+                description=f"Покупка пакета: {package.name}",
+                order_id=order_id_str,
+                user_email=None,  # Can add user email if available
+                user_phone=None   # Can add user phone if available
+            )
 
-        # Update order with YooKassa payment_id
-        order.invoice_id = payment_info["payment_id"]
-        await session.commit()
+            # Update order with YooKassa payment_id
+            order.invoice_id = payment_info["payment_id"]
+            await session.commit()
 
-        payment_url = payment_info["confirmation_url"]
+            payment_url = payment_info["confirmation_url"]
 
-        # Save payment data to state
-        await state.update_data(
-            order_id=order.id,
-            package_id=package.id,
-            amount=float(package.price_rub),
-            payment_id=payment_info["payment_id"]
-        )
-        await state.set_state(PaymentStates.waiting_for_payment)
+            # Save payment data to state
+            await state.update_data(
+                order_id=order.id,
+                package_id=package.id,
+                amount=float(package.price_rub),
+                payment_id=payment_info["payment_id"]
+            )
+            await state.set_state(PaymentStates.waiting_for_payment)
 
-        text = (
-            f"💎 <b>Покупка пакета: {package.name}</b>\n\n"
-            f"📦 Изображений: {package.images_count}\n"
-            f"💰 Стоимость: {package.price_rub}₽\n\n"
-            "Нажмите кнопку ниже для перехода к оплате.\n\n"
-            "После успешной оплаты изображения будут автоматически начислены на ваш баланс."
-        )
+            text = (
+                f"💎 <b>Покупка пакета: {package.name}</b>\n\n"
+                f"📦 Изображений: {package.images_count}\n"
+                f"💰 Стоимость: {package.price_rub}₽\n\n"
+                "Нажмите кнопку ниже для перехода к оплате.\n\n"
+                "После успешной оплаты изображения будут автоматически начислены на ваш баланс."
+            )
 
-        await callback.message.edit_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=get_payment_confirmation(payment_url)
-        )
+            await callback.message.edit_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=get_payment_confirmation(payment_url)
+            )
+
+        except Exception as e:
+            # Mark order as failed
+            order.status = "failed"
+            await session.commit()
+
+            # Show user-friendly error message
+            error_text = (
+                "❌ <b>Ошибка при создании платежа</b>\n\n"
+                "К сожалению, не удалось создать платёж. "
+                "Пожалуйста, попробуйте позже или обратитесь в поддержку.\n\n"
+                f"Код ошибки: {type(e).__name__}"
+            )
+
+            await callback.message.edit_text(
+                error_text,
+                parse_mode="HTML",
+                reply_markup=get_back_keyboard()
+            )
 
     await callback.answer()
 

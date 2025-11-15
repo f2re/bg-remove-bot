@@ -24,7 +24,9 @@ class Settings(BaseSettings):
     # YooKassa (ЮКасса)
     YOOKASSA_SHOP_ID: str
     YOOKASSA_SECRET_KEY: str
-    YOOKASSA_RETURN_URL: str = "https://t.me/your_bot"  # URL to return after payment
+    # IMPORTANT: Replace 'your_bot' with your actual bot username (e.g., https://t.me/bg_remove_bot)
+    # This URL is shown to users after payment. For Telegram bots, use your bot's t.me link
+    YOOKASSA_RETURN_URL: str = "https://t.me/your_bot"
 
     # Pricing (in kopecks)
     PACKAGE_1_PRICE: int = 5000
