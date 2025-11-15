@@ -249,7 +249,11 @@ async def info_privacy_handler(callback: CallbackQuery):
 @router.callback_query(F.data == "back_to_menu")
 async def back_to_menu_handler(callback: CallbackQuery):
     """Handle back to menu"""
-    await callback.message.delete()
+    try:
+        await callback.message.delete()
+    except Exception:
+        # Message might be too old or already deleted
+        pass
     await callback.answer()
 
 
