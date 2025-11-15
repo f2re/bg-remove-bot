@@ -21,11 +21,10 @@ class Settings(BaseSettings):
     # This model supports both image input and image output with modalities
     OPENROUTER_MODEL: str = "google/gemini-2.5-flash-image-preview"
 
-    # Robokassa
-    ROBOKASSA_LOGIN: str
-    ROBOKASSA_PASSWORD1: str
-    ROBOKASSA_PASSWORD2: str
-    ROBOKASSA_TEST_MODE: bool = False
+    # YooKassa (ЮКасса)
+    YOOKASSA_SHOP_ID: str
+    YOOKASSA_SECRET_KEY: str
+    YOOKASSA_RETURN_URL: str = "https://t.me/your_bot"  # URL to return after payment
 
     # Pricing (in kopecks)
     PACKAGE_1_PRICE: int = 5000

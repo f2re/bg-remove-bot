@@ -8,7 +8,7 @@ from app.database.crud import (
     get_package_by_id, create_order, get_order_by_invoice_id,
     mark_order_paid, get_user_orders
 )
-from app.services.robokassa import RobokassaService
+from app.services.yookassa import YookassaService
 from app.keyboards.user_kb import get_payment_confirmation, get_back_keyboard
 from app.utils.validators import validate_package_id
 
@@ -32,32 +32,41 @@ async def buy_package_handler(callback: CallbackQuery, state: FSMContext):
             await callback.answer("❌ Пакет не найден", show_alert=True)
             return
 
-        # Generate unique invoice ID
+        # Generate unique order ID for YooKassa metadata
         import time
-        invoice_id = f"order_{callback.from_user.id}_{int(time.time())}"
+        order_id_str = f"order_{callback.from_user.id}_{int(time.time())}"
 
-        # Create order in database
+        # Create order in database (temporarily without payment_id)
         order = await create_order(
             session,
             telegram_id=callback.from_user.id,
             package_id=package.id,
-            invoice_id=invoice_id,
+            invoice_id=order_id_str,
             amount=float(package.price_rub)
         )
 
-        # Generate payment link
-        robokassa = RobokassaService()
-        payment_url = robokassa.generate_payment_link(
-            order_id=order.id,
+        # Create payment via YooKassa
+        yookassa = YookassaService()
+        payment_info = yookassa.create_payment(
             amount=float(package.price_rub),
-            description=f"Покупка пакета: {package.name}"
+            description=f"Покупка пакета: {package.name}",
+            order_id=order_id_str,
+            user_email=None,  # Can add user email if available
+            user_phone=None   # Can add user phone if available
         )
+
+        # Update order with YooKassa payment_id
+        order.invoice_id = payment_info["payment_id"]
+        await session.commit()
+
+        payment_url = payment_info["confirmation_url"]
 
         # Save payment data to state
         await state.update_data(
             order_id=order.id,
             package_id=package.id,
-            amount=float(package.price_rub)
+            amount=float(package.price_rub),
+            payment_id=payment_info["payment_id"]
         )
         await state.set_state(PaymentStates.waiting_for_payment)
 
@@ -179,14 +188,12 @@ async def notify_payment_success(bot, order_id: int):
         )
 
 
-async def process_payment_webhook(invoice_id: str, out_sum: float, signature: str, bot=None) -> bool:
+async def process_payment_webhook(notification_data: dict, bot=None) -> bool:
     """
-    Process payment webhook from Robokassa
+    Process payment webhook from YooKassa
 
     Args:
-        invoice_id: Invoice ID
-        out_sum: Payment amount
-        signature: Payment signature
+        notification_data: Raw notification data from YooKassa webhook
         bot: Optional bot instance for sending notifications
 
     Returns:
@@ -195,19 +202,28 @@ async def process_payment_webhook(invoice_id: str, out_sum: float, signature: st
     import logging
     logger = logging.getLogger(__name__)
 
-    # Verify signature
-    robokassa = RobokassaService()
-    if not robokassa.verify_payment_signature(out_sum, int(invoice_id), signature):
-        logger.error(f"Invalid signature for invoice {invoice_id}")
+    # Verify and parse webhook notification
+    yookassa = YookassaService()
+    payment_info = yookassa.verify_webhook_notification(notification_data)
+
+    if not payment_info:
+        logger.error("Invalid webhook notification")
         return False
+
+    # Check if payment is successful
+    if payment_info["status"] != "succeeded" or not payment_info["paid"]:
+        logger.info(f"Payment {payment_info['payment_id']} status: {payment_info['status']}")
+        return False
+
+    payment_id = payment_info["payment_id"]
 
     # Mark order as paid
     db = get_db()
     async with db.get_session() as session:
-        order = await mark_order_paid(session, invoice_id)
+        order = await mark_order_paid(session, payment_id)
 
         if not order:
-            logger.error(f"Order not found for invoice {invoice_id}")
+            logger.error(f"Order not found for payment_id {payment_id}")
             return False
 
         # Payment successful
